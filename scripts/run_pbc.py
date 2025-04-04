@@ -1,4 +1,4 @@
-from pyscf.pbc.mp.kappa_mp2 import KappaRMP2
+from pyscf.acmp.pbc.kappa_mp2 import KappaRMP2
 from pyscf.pbc.mp.mp2 import RMP2
 # from pyscf.pbc.mp.kappa_ump2 import KappaUMP2, UMP2
 from pyscf.pbc import gto, scf
@@ -6,7 +6,7 @@ from pyscf.pbc import cc
 import numpy as np
 
 
-basis = "def2-svp"
+basis = "def2-tzvp"
 mol_strings = [
     "H 0 0 0; H 0 0 0.7", 
     "H 0 0 0; F 0 0 1.1",
@@ -20,8 +20,8 @@ cc_ens = []
 cct_ens = []
 for atom in mol_strings:
     print()
-    mol = gto.M(a=np.eye(3)*4, atom=atom, basis=basis)
-    mf = scf.RHF(mol)
+    mol = gto.M(a=np.eye(3)*6, atom=atom, basis=basis, verbose=5)
+    mf = scf.RHF(mol).density_fit()
     mf.kernel()
     mymp = RMP2(mf)
     mymp.kernel()

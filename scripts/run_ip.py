@@ -1,5 +1,5 @@
-from pyscf.mp.lmp2 import LambdaMP2, MP2
-from pyscf.mp.ulmp2 import LambdaUMP2, UMP2
+from pyscf.acmp.lambda_mp2 import LambdaMP2, MP2
+from pyscf.acmp.lambda_ump2 import LambdaUMP2, UMP2
 from pyscf import gto, scf
 from pyscf import cc
 
