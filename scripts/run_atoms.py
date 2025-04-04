@@ -1,4 +1,4 @@
-from pyscf.mp.acmp2 import MP2, ACMP2
+from pyscf.acmp.acmp2 import MP2, ACMP2
 from pyscf import gto, scf, dft
 from pyscf import cc
 

@@ -1,5 +1,5 @@
-from pyscf.mp.kappa_mp2 import KappaMP2, MP2
-from pyscf.mp.kappa_ump2 import KappaUMP2, UMP2
+from pyscf.acmp.kappa_mp2 import KappaMP2, MP2
+from pyscf.acmp.kappa_ump2 import KappaUMP2, UMP2
 from pyscf import gto, scf
 from pyscf import cc
 

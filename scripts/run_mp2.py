@@ -1,5 +1,5 @@
-from pyscf.mp.lmp2 import LambdaMP2, MP2
-from pyscf.mp.ulmp2 import LambdaUMP2, UMP2
+from pyscf.acmp.lambda_mp2 import LambdaMP2, MP2
+from pyscf.acmp.lambda_ump2 import LambdaUMP2, UMP2
 from pyscf import gto, scf
 from pyscf import cc
 
@@ -42,9 +42,9 @@ for atom in mol_strings:
     mol = gto.M(atom=atom, basis=basis)
     mf = scf.RHF(mol)
     mf.kernel()
-    mymp = RMP2(mf)
+    mymp = MP2(mf)
     mymp.kernel()
-    mylmp = LambdaRMP2(mf)
+    mylmp = LambdaMP2(mf)
     mylmp.omega_code = "MGGA_WP"
     mylmp.kernel()
     mycc = cc.CCSD(mf)
