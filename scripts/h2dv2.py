@@ -19,10 +19,17 @@ def get_mol(r):
     return gto.M(atom=f"H 0 0 0; H 0 0 {r}", basis=BASIS)
 
 
+dm0 = None
+t1, t2 = None, None
 def run_calc(r):
+    global dm0, t1, t2
     mol = get_mol(r)
-    mf = scf.RHF(mol)
-    mf.kernel()
+    mf = scf.RKS(mol).newton()
+    mf.xc = "HF"
+    mf.kernel(dm0=dm0)
+    dm0 = mf.make_rdm1()
+    myhf = scf.RHF(mol)
+    ehf = myhf.energy_tot(mf.make_rdm1())
     eo = np.max(mf.mo_energy[mf.mo_occ > 1e-10])
     eu = np.min(mf.mo_energy[mf.mo_occ <= 1e-10])
     j, k = mf.get_jk()
@@ -32,9 +39,13 @@ def run_calc(r):
     acmp = ACMP2(mf)
     mymp.kernel()
     acmp.kernel()
-    mycc = CCSD(mf)
-    mycc.kernel()
-    return mf.e_tot, mymp.e_tot, acmp.e_tot, mycc.e_tot
+    try:
+        mycc = CCSD(mf.to_hf())
+        ecorr, t1, t2 = mycc.kernel(t1=t1, t2=t2)
+        ecc = mycc.e_tot
+    except np.linalg.LinAlgError:
+        ecorr, ecc, t1, t2 = 0, e0, None, None
+    return mf.e_tot, ehf, acmp.e_corr + ehf, ecc
 
 
 rs = np.linspace(0.5, 7.0, 100)
@@ -42,6 +53,8 @@ ehfs = []
 emps = []
 eacs = []
 eccs = []
+rs = np.linspace(0.5, 7.0, 100)
+rs = 0.5 * 10**np.linspace(0, 2, 100)
 for r in rs:
     ehf, emp, eac, ecc = run_calc(r)
     ehfs.append(ehf)
