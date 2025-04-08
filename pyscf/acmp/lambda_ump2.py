@@ -1,5 +1,5 @@
 from pyscf.mp.ump2 import UMP2, logger
-from pyscf.acmp.lmp2_numint import LMP2NumInt
+from pyscf.acmp.mp2_numint import MP2NumInt
 from pyscf.dft import gen_grid
 from pyscf import __config__
 import numpy
@@ -17,8 +17,8 @@ class LambdaUMP2(UMP2):
         super(LambdaUMP2, self).__init__(
             mf, frozen=frozen, mo_coeff=mo_coeff, mo_occ=mo_occ
         )
-        self.omega_code = "LDA_WP"
-        self._numint = LMP2NumInt()
+        self.omega_code = "PLASMA_LDA_WP"
+        self._numint = MP2NumInt()
         self.grids = gen_grid.Grids(self.mol)
         self.grids.level = getattr(
             __config__, 'dft_rks_RKS_grids_level', self.grids.level)

@@ -1,6 +1,6 @@
 from pyscf import scf, gto
 from pyscf.mp.mp2 import MP2
-from pyscf.acmp.acmp2 import ACMP2
+from pyscf.acmp.ac_mp2 import ACMP2
 import numpy as np
 import matplotlib.pyplot as plt
 from pyscf.cc import CCSD

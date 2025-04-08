@@ -15,6 +15,7 @@ mymp = MP2(mf)
 mymp.kernel()
 
 mylmp = LambdaMP2(mf)
+mylmp.omega_code = "PLASMA_LDA_WP"
 mylmp.kernel()
 
 mf = scf.UHF(mol)
@@ -24,6 +25,7 @@ mymp = UMP2(mf)
 mymp.kernel()
 
 mylmp = LambdaUMP2(mf)
+mylmp.omega_code = "PLASMA_LDA_WP"
 mylmp.kernel()
 
 mp_ens = []
@@ -45,7 +47,7 @@ for atom in mol_strings:
     mymp = MP2(mf)
     mymp.kernel()
     mylmp = LambdaMP2(mf)
-    mylmp.omega_code = "MGGA_WP"
+    mylmp.omega_code = "PLASMA_MGGA_WP"
     mylmp.kernel()
     mycc = cc.CCSD(mf)
     mycc.kernel()

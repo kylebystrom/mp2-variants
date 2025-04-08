@@ -13,9 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pyscf import lib
-from pyscf.mp import mp2, kappa_mp2
-from pyscf.mp import ump2, kappa_ump2
+from pyscf.mp import mp2
+from pyscf.acmp import kappa_mp2
+from pyscf.mp import ump2
+from pyscf.acmp import kappa_ump2
 
 class KappaRMP2(kappa_mp2.KappaMP2):
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None, kappa=1.5):

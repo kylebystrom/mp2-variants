@@ -60,15 +60,8 @@ def mgga_plasma_frequency2(rho, prefac=None):
 
 
 def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
-             max_memory=2000, verbose=None):
-    if xc_code == "LDA_WP":
-        xctype = 'LDA'  # TODO detect xctype
-    elif xc_code == "GGA_WP":
-        xctype = 'GGA'
-    elif xc_code == "MGGA_WP":
-        xctype = 'MGGA'
-    else:
-        raise NotImplementedError
+            max_memory=2000, verbose=None):
+    xctype = ni._xc_type(xc_code)
     make_rho, nset, nao = ni._gen_rho_evaluator(mol, dms, hermi, False, grids)
     ao_loc = mol.ao_loc_nr()
     cutoff = grids.cutoff * 1e2
@@ -83,7 +76,8 @@ def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
                 in ni.block_loop(mol, grids, nao, ao_deriv, max_memory=max_memory):
             for i in range(nset):
                 rho = make_rho(i, ao, mask, xctype)
-                omega = ni.get_artificial_gap(xc_code, rho, xctype=xctype)
+                omega = ni.eval_xc_eff(xc_code, rho, xctype=xctype,
+                                       deriv=0)[0]
                 if xctype == 'LDA':
                     den = rho * weight
                 else:
@@ -124,15 +118,8 @@ def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
 
 
 def nr_ump2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
-             max_memory=2000, verbose=None):
-    if xc_code == "LDA_WP":
-        xctype = 'LDA'  # TODO detect xctype
-    elif xc_code == "GGA_WP":
-        xctype = 'GGA'
-    elif xc_code == "MGGA_WP":
-        xctype = 'MGGA'
-    else:
-        raise NotImplementedError
+            max_memory=2000, verbose=None):
+    xctype = ni._xc_type(xc_code)
     ao_loc = mol.ao_loc_nr()
     cutoff = grids.cutoff * 1e2
     nbins = NBINS * 2 - int(NBINS * numpy.log(cutoff) / numpy.log(grids.cutoff))
@@ -153,7 +140,8 @@ def nr_ump2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
                 rho_a = make_rhoa(i, ao, mask, xctype)
                 rho_b = make_rhob(i, ao, mask, xctype)
                 rho = (rho_a, rho_b)
-                omega = ni.get_artificial_gap(xc_code, rho[0] + rho[1], xctype=xctype)
+                omega = ni.eval_xc_eff(xc_code, rho[0] + rho[1], xctype=xctype,
+                                       deriv=0)[0]
                 if xctype == 'LDA':
                     den_a = rho_a * weight
                     den_b = rho_b * weight
@@ -194,21 +182,35 @@ def nr_ump2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
     return nelec, excsum, vmat
 
 
-class LMP2NumInt(numint.NumInt):
+PLASMA_FREQUENCY_MODELS = {
+    "PLASMA_LDA_WP": ("LDA", lda_plasma_frequency),
+    "PLASMA_GGA_WP": ("GGA", gga_plasma_frequency),
+    "PLASMA_MGGA_WP": ("MGGA", mgga_plasma_frequency2),
+}
 
+
+class MP2NumIntMixin:
+    def _xc_type(self, xc_code):
+        if isinstance(xc_code, tuple):
+            assert isinstance(xc_code[0], str)
+            return xc_code[0]
+        elif xc_code.startswith("PLASMA_"):
+            return PLASMA_FREQUENCY_MODELS[xc_code][0]
+        else:
+            return self.libxc.xc_type(xc_code)
+
+    def eval_xc_eff(self, xc_code, rho, deriv=1, omega=None, xctype=None,
+                    verbose=None):
+        if isinstance(xc_code, tuple):
+            return xc_code[1](rho), None, None, None
+        elif xc_code.startswith("PLASMA_"):
+            return PLASMA_FREQUENCY_MODELS[xc_code][1](rho), None, None, None
+        else:
+            return super().eval_xc_eff(xc_code, rho, deriv=deriv, omega=omega,
+                                       xctype=xctype, verbose=verbose)
+
+
+class MP2NumInt(MP2NumIntMixin, numint.NumInt):
     nr_rmp2 = nr_rmp2
 
     nr_ump2 = nr_ump2
-
-    def get_artificial_gap(self, xc_code, rho, xctype='LDA'):
-        if xc_code == "LDA_WP":
-            assert xctype == "LDA"
-            return lda_plasma_frequency(rho)
-        elif xc_code == "GGA_WP":
-            assert xctype == "GGA"
-            return gga_plasma_frequency(rho)
-        elif xc_code == "MGGA_WP":
-            assert xctype == "MGGA"
-            return mgga_plasma_frequency2(rho)
-        else:
-            raise NotImplementedError

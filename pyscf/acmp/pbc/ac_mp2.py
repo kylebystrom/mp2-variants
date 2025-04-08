@@ -13,30 +13,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pyscf import lib
-from pyscf.mp import mp2, kappa_mp2
-from pyscf.mp import ump2, kappa_ump2
+from pyscf.mp import mp2
+from pyscf.acmp import ac_mp2
+from pyscf.mp import ump2
+from pyscf.acmp import ac_ump2
+from pyscf.acmp.pbc import mp2_numint
+from pyscf.pbc.dft.gen_grid import BeckeGrids
 
-class KappaRMP2(kappa_mp2.KappaMP2):
-    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None, kappa=1.5):
+
+def get_acmp_si_limit(mp):
+    if isinstance(mp.si_limit, str) and mp.si_limit == "HF":
+        winf_xx = -0.5 * mp._scf.get_k()
+    else:
+        ni = mp2_numint.MP2NumInt()
+        grids = BeckeGrids(mp._scf.mol)
+        grids.level = 3
+        maxmem = mp._scf.mol.max_memory
+        nelec, excsum, vmat = ni.nr_rmp2(mp._scf.mol, grids, mp.si_limit,
+                                         mp._scf.make_rdm1(), relativity=0,
+                                         hermi=1, max_memory=maxmem,
+                                         verbose=None)
+        winf_xx = vmat
+    return winf_xx
+
+
+class ACRMP2(ac_mp2.ACMP2):
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None):
         if abs(mf.kpt).max() > 1e-9:
             raise NotImplementedError
         from pyscf.pbc.df.df_ao2mo import warn_pbc2d_eri
         warn_pbc2d_eri(mf)
-        kappa_mp2.KappaRMP2.__init__(self, mf, frozen, mo_coeff, mo_occ, kappa)
+        ac_mp2.ACMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
+
+    get_acmp_si_limit = get_acmp_si_limit
 
     def ao2mo(self, mo_coeff=None):
         ao2mofn = _gen_ao2mofn(self._scf)
         eris = mp2._make_eris(self, mo_coeff, ao2mofn, self.verbose)
         return eris
 
-class KappaUMP2(kappa_ump2.KappaUMP2):
-    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None, kappa=1.5):
+class ACUMP2(ac_ump2.ACUMP2):
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None):
         if abs(mf.kpt).max() > 1e-9:
             raise NotImplementedError
         from pyscf.pbc.df.df_ao2mo import warn_pbc2d_eri
         warn_pbc2d_eri(mf)
-        kappa_ump2.KappaUMP2.__init__(self, mf, frozen, mo_coeff, mo_occ, kappa)
+        ac_ump2.ACUMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
+
+    get_acmp_si_limit = get_acmp_si_limit
 
     def ao2mo(self, mo_coeff=None):
         ao2mofn = _gen_ao2mofn(self._scf)
