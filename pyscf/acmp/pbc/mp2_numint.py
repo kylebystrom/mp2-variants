@@ -26,7 +26,6 @@ def nr_rmp2(ni, cell, grids, xc_code, dms, spin=0, relativity=0, hermi=1,
         raise NotImplementedError(f'nr_rks for functional {xc_code}')
 
     make_rho, nset, nao = ni._gen_rho_evaluator(cell, dms, hermi, False)
-    print("NSET", nset, len(kpts), len(kpts_band), dms.shape)
 
     if xctype in ('LDA', 'GGA', 'MGGA'):
         nelec = numpy.zeros(nset)
@@ -50,7 +49,6 @@ def nr_rmp2(ni, cell, grids, xc_code, dms, spin=0, relativity=0, hermi=1,
                 excsum[i] += den.dot(omega)
                 wv = weight * omega
                 wv = wv[None, :]
-                print(len(ao_k1), ao_k1[0].shape)
                 if xctype != 'LDA':
                     ao_k1 = [ao[0] for ao in ao_k1]
                 vmat[i] += ni._vxc_mat(cell, ao_k1, wv, mask, 'LDA',
@@ -129,7 +127,7 @@ def nr_ump2(ni, cell, grids, xc_code, dms, spin=1, relativity=0, hermi=1,
                 # or the _vxcmat should only be called one for efficiency's sake.
                 wv = numpy.stack([wv, wv])
                 if xctype != 'LDA':
-                    ao_k1 = ao_k1[0]
+                    ao_k1 = [ao[0] for ao in ao_k1]
                 vmata[i] += ni._vxc_mat(cell, ao_k1, wv[0], mask, 'LDA',
                                         shls_slice, ao_loc, v_hermi)
                 vmatb[i] += ni._vxc_mat(cell, ao_k1, wv[1], mask, 'LDA',

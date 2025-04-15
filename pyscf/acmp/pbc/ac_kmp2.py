@@ -35,8 +35,10 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     mp.dump_flags()
     nmo = mp.nmo
     nocc = mp.nocc
+    nocc_list = mp.get_nocc(per_kpoint=True)
     nvir = nmo - nocc
     nkpts = mp.nkpts
+    print("NOCC2", nocc)
 
     with_df_ints = mp.with_df_ints and isinstance(mp._scf.with_df, df.GDF)
 
@@ -75,7 +77,6 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     else:
         t2 = None
 
-
     # Build 3-index DF tensor Lov
     if with_df_ints:
         Lov = kmp2._init_mp_df_eris(mp)
@@ -86,10 +87,10 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
         print("KINDEX", ki, mp._scf.kpts[ki], len(winf_k_xx))
         winf_xx = -winf_k_xx[ki]
         # TODO lib.dot if possible
-        winf_xo = np.dot(winf_xx, mo_coeff[ki][:, :nocc])
-        winf_oo = np.dot(mo_coeff[ki][:, :nocc].T.conj(), winf_xo)
+        my_nocc = nocc_list[ki]
+        winf_xo = np.dot(winf_xx, mo_coeff[ki][:, :my_nocc])
+        winf_oo = np.dot(mo_coeff[ki][:, :my_nocc].T.conj(), winf_xo)
         winf = winf_oo.real
-        print(np.linalg.eigh(winf))
         for kj in range(nkpts):
             for ka in range(nkpts):
                 kb = kconserv[ki,ka,kj]
@@ -129,6 +130,7 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
                 edi = einsum('ikab,jkab->ij', t2_ijab, oovv_ij[ka]).real * 2
                 exi = -einsum('ikab,jkba->ij', t2_ijab, oovv_ij[kb]).real
                 w0 = -2 * (edi.real + exi.real)
+                w0 = w0[:my_nocc, :my_nocc]
                 energy += mp.ac_interpolator(w0, winf)
 
     log.timer("KMP2", *cput0)
@@ -148,10 +150,17 @@ def get_acmp_si_limit(mp):
         grids.level = 3
         maxmem = mp._scf.mol.max_memory
         mf = mp._scf
-        print("HI", mf.kpts, mf.make_rdm1().shape)
+        if isinstance(mf.kpts, np.ndarray):
+            kpts = mf.kpts
+            kpts_band = mf.kpts
+            dm = mf.make_rdm1()
+        else:
+            kpts = mf.kpts.kpts
+            kpts_band = mf.kpts.kpts_ibz
+            dm = mf.kpts.transform_dm(mf.make_rdm1())
         nelec, excsum, vmat = ni.nr_rmp2(mf.mol, grids, mp.si_limit,
-                                         mf.make_rdm1(), relativity=0,
-                                         kpts=mf.kpts, kpts_band=mf.kpts,
+                                         dm, relativity=0,
+                                         kpts=kpts, kpts_band=kpts_band,
                                          hermi=1, max_memory=maxmem,
                                          verbose=None)
         winf_k_xx = vmat
