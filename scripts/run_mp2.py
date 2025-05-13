@@ -3,7 +3,8 @@ from pyscf.acmp.lambda_ump2 import LambdaUMP2, UMP2
 from pyscf import gto, scf
 from pyscf import cc
 
-basis = "aug-cc-pvtz"
+# basis = "aug-cc-pvtz"
+basis = "def2-tzvp"
 atom = "He"
 
 mol = gto.M(atom=atom, basis=basis, spin=0)

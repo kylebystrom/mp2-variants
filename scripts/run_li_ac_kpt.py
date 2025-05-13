@@ -12,7 +12,7 @@ from pyscf.pbc import mp
 
 
 n = 1
-nk = 2
+nk = 5
 
 
 def get_basis(atoms):
@@ -46,8 +46,6 @@ kpts = cell.make_kpts(
 kmf = scf.KRHF(cell, kpts)
 kmf = kmf.density_fit()
 ehf = kmf.kernel()
-print("HI", kmf.mo_energy)
-print()
 
 mypt = mp.KMP2(kmf)
 mypt.kernel()

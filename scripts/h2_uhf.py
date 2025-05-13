@@ -1,11 +1,11 @@
 from pyscf import scf, gto
-from pyscf.mp.mp2 import MP2
+from pyscf.mp.ump2 import UMP2
 from pyscf.acmp.ac_mp2 import ACMP2, BasicEigNumInterpolator, \
         BasicMatNumInterpolator, WinfMatNumInterpolator, \
         WinfMatNumInterpolator2, BalancedEigNumInterpolator, \
         SquareMatNumInterpolator, ScreenedEigNumInterpolator, \
-        RegEigNumInterpolator, ExtractEigNumInterpolator, \
-        ScreenedMatNumInterpolator
+        RegEigNumInterpolator, ExtractEigNumInterpolator
+from pyscf.acmp.ac_ump2 import ACUMP2
 import numpy as np
 import matplotlib.pyplot as plt
 from pyscf.cc import CCSD
@@ -42,7 +42,6 @@ Ninterp = 4096
 eigint = ExtractEigNumInterpolator(Ninterp, [])
 matint = BasicMatNumInterpolator(Ninterp, [])
 matint = SquareMatNumInterpolator(Ninterp, [])
-# matint = ScreenedMatNumInterpolator(Ninterp, [])
 
 dm0 = None
 t1, t2 = None, None
@@ -50,25 +49,24 @@ def run_calc(r):
     global dm0, t1, t2
     print("RADIUS", r)
     mol = get_mol(r)
-    mf = scf.RKS(mol).newton()
+    mf = scf.UKS(mol).newton()
     mf.xc = "PBE"
+    mf.grids.level = 4
     mf.kernel(dm0=dm0)
     dm0 = mf.make_rdm1()
-    myhf = scf.RHF(mol)
+    myhf = scf.UHF(mol)
     ehf = myhf.energy_tot(mf.make_rdm1())
     eo = np.max(mf.mo_energy[mf.mo_occ > 1e-10])
     eu = np.min(mf.mo_energy[mf.mo_occ <= 1e-10])
     j, k = mf.get_jk()
     dm = mf.make_rdm1()
     exx = 0.25 * (dm * k).sum()
-    mymp = ACMP2(mf)
+    mymp = ACUMP2(mf)
     mymp.ac_interpolator = matint
     mymp.si_limit = "1.24*GGA_X_PBE"
-    acmp = ACMP2(mf)
+    acmp = ACUMP2(mf)
     acmp.ac_interpolator = eigint
     acmp.si_limit = "1.24*GGA_X_PBE"
-    rpa = RPA(mf)
-    rpa.kernel()
     # acmp.si_limit = silim
     mymp.kernel()
     acmp.kernel()
@@ -78,21 +76,18 @@ def run_calc(r):
         ecc = mycc.e_tot
     except np.linalg.LinAlgError:
         ecorr, ecc, t1, t2 = 0, e0, None, None
+    print("DIFF", np.linalg.norm(dm0[0] - dm0[1]))
     print(mymp.e_tot, acmp.e_tot, ehf, e0)
     print()
     shutil.copyfile("w_list.npy", f"{r:.3f}_wlist.npy")
-    return mf.e_tot, mymp.e_tot, acmp.e_tot, ecc, rpa.e_corr + ehf
+    return mf.e_tot, mymp.e_tot, acmp.e_tot, ecc, eu - eo
 
 
-rs = np.linspace(0.5, 7.0, 50)
 ehfs = []
 emps = []
 eacs = []
 eccs = []
 gaps = []
-rs = np.linspace(0.5, 7.0, 100)
-rs = 0.5 * 10**np.linspace(0, 2, 100)
-rs = np.append(rs, [200, 500, 1000])
 rs = np.linspace(0.5, 7.0, 50)
 for r in rs:
     ehf, emp, eac, ecc, gap = run_calc(r)
