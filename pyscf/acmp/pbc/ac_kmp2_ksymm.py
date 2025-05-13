@@ -121,6 +121,7 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
             # TODO is this the right weighting of everything?
             w0 = -2 * (edi.real + exi.real)
             w0 = w0[:my_nocc, :my_nocc]
+            w_list = mp.make_w_list(eijab, oovv_ij[ka], oovv_ij[kb])
             energy += mp.ac_interpolator(w0, winf) * weight[idx_ibz] * nkpts**3
             icount += 1
 

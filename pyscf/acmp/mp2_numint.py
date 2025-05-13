@@ -8,6 +8,13 @@ from pyscf.dft.numint import (NBINS, _scale_ao_sparse,
 CFC = 0.3 * (3 * numpy.pi**2)**(2.0 / 3)
 
 
+def get_power_of_ws_radius_func(power, constant):
+    pow3 = power / 3.0
+    def _rs_function(rho):
+        return constant * (3.0 / (4 * numpy.pi * rho))**pow3
+    return ("LDA", _rs_function)
+
+
 def lda_plasma_frequency(rho, prefac=None):
     if prefac is None:
         prefac = numpy.float64(2)**-0.5

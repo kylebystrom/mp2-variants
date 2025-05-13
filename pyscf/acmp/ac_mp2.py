@@ -27,7 +27,11 @@ from pyscf.mp.mp2 import MP2
 from pyscf.dft.gen_grid import Grids
 from pyscf.acmp.mp2_numint import MP2NumInt, get_power_of_ws_radius_func
 
-WITH_T2 = getattr(__config__, 'mp_mp2_with_t2', True)
+WITH_T2 = False
+ACMP_PAIRED = 0
+ACMP_D_ONLY = 1
+ACMP_X_ONLY = 3
+ACMP_D_AND_X = 2
 
 
 def _get_ac_param_array(N):
@@ -48,27 +52,40 @@ def _acmp_matrix_pow(mat, mypow):
     return (evec * eval).dot(evec.T)
 
 
-def _acmp_matrix_exp(mat, expnt):
+def _acmp_matrix_exp(mat, expnt=1.0):
     eval, evec = numpy.linalg.eigh(mat)
     eval = numpy.exp(expnt * eval)
     return (evec * eval).dot(evec.T)
 
 
+def _acmp_matrix_pow(mat, mypow):
+    eval, evec = numpy.linalg.eig(mat)
+    evec_inv = numpy.linalg.solve(evec, _identity_like(evec))
+    # eval = numpy.maximum(eval, 0)
+    eval = eval**mypow
+    return (evec * eval).dot(evec_inv)
+
+
+def _acmp_matrix_exp(mat, expnt=1.0):
+    eval, evec = numpy.linalg.eig(mat)
+    eval = numpy.exp(expnt * eval)
+    return (evec * eval).dot(evec.T)
+
+
 def get_acmp_si_limit(mp):
-    exx_xx = -0.5 * mp._scf.get_k()
+    exx_xx = -0.25 * mp._scf.get_k()
     if isinstance(mp.si_limit, str) and mp.si_limit == "HF":
         winf_xx = exx_xx.copy()
     else:
-        ni = MP2NumInt()
-        grids = Grids(mp._scf.mol)
-        grids.level = 3
+        ni = mp._numint
+        grids = mp.grids
         maxmem = mp._scf.mol.max_memory
         nelec, excsum, vmat = ni.nr_rmp2(mp._scf.mol, grids, mp.si_limit,
                                          mp._scf.make_rdm1(), relativity=0,
                                          hermi=1, max_memory=maxmem,
                                          verbose=None)
         # Reference strong correlation limit to exx
-        winf_xx = 2 * vmat - exx_xx
+        winf_xx = vmat - exx_xx
         # winf_xx = vmat
     return exx_xx, winf_xx
 
@@ -86,15 +103,27 @@ def get_artificial_gap(mp):
 
 
 def _acmp_ao2mo(mat_xx, coeff):
+    mat_xx = numpy.ascontiguousarray(mat_xx)
+    coeff = numpy.ascontiguousarray(coeff)
     mat_xo = lib.dot(mat_xx, coeff)
-    return lib.dot(coeff.T, mat_xo)
+    return lib.dot(coeff.T.conj(), mat_xo)
 
 
 def _get_corrected_winf(winf, exx):
     # Make sure winf_oo is positive
-    d = 0.04
-    prod = winf.dot(winf) + d * exx.dot(exx)
+    d = 0.0001
+    prod = winf.T.conj().dot(winf) + d * exx.T.conj().dot(exx)
     return _acmp_matrix_pow(prod, 0.5)
+
+
+def concatentate_w(exx_oo, wlist_pt, wlist_df):
+    for w in wlist_pt:
+        w[:] *= -2
+    exx = -exx_oo.real
+    wlist_df = [-w.real for w in wlist_df]
+    wlist_df[-1] = _get_corrected_winf(wlist_df[-1], exx)
+    w_list = numpy.append(wlist_pt, wlist_df, axis=0)
+    return w_list
 
 
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
@@ -114,29 +143,20 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
 
     nocc = mp.nocc
     nvir = mp.nmo - nocc
-    _eia = mo_energy[:nocc,None] - mo_energy[None,nocc:]
+    eia = mo_energy[:nocc,None] - mo_energy[None,nocc:]
 
     if with_t2:
-        t2 = numpy.empty((nocc,nocc,nvir,nvir), dtype=eris.ovov.dtype)
+        raise NotImplementedError
+        # t2 = numpy.empty((nocc,nocc,nvir,nvir), dtype=eris.ovov.dtype)
     else:
         t2 = None
 
     exx_xx, winf_xx = mp.get_acmp_si_limit()
-    agap_xx = mp.get_artificial_gap()
     occ_coeff = mo_coeff[:, :nocc]
     exx_oo = _acmp_ao2mo(exx_xx, occ_coeff)
     winf_oo = _acmp_ao2mo(winf_xx, occ_coeff)
-    agap_oo = _acmp_ao2mo(agap_xx, occ_coeff)
-    numw = 3
-    # TODO make this orbital-invariant
-    print("AGAP", agap_oo, _eia[:, 0])
-    eia_list = [
-        _eia,
-        _eia - 0.5 * numpy.diag(agap_oo)[:, None],
-        _eia - numpy.diag(agap_oo)[:, None],
-    ]
 
-    w_list = [numpy.zeros((nocc, nocc)) for _ in range(numw)]
+    w_list = [numpy.zeros((nocc, nocc)) for _ in range(mp.get_pt_list_size())]
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -146,37 +166,13 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
             gi = numpy.asarray(eris.ovov[i*nvir:(i+1)*nvir])
 
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
-        # t2i = gi.conj()/lib.direct_sum('jb+a->jba', eia, eia[i])
-        eia = eia_list[0]
-        ei = lib.direct_sum('jb+a->jba', eia, eia[i]) + 1e-8
-        t2i = gi.conj() / ei
-        w_list[0][:] += lib.einsum('jab,kab->jk', t2i, gi).real * 2
-        w_list[0][:] -= lib.einsum('jab,kba->jk', t2i, gi).real
+        ei = lib.direct_sum('jb+a->jba', eia, eia[i]) - 1e-8
+        mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED)
 
-        # ei = ei * ei
-        # ei = -ei * numpy.log(-ei)
-        # t2i = gi.conj() / ei * numpy.log(-ei)
-        # t2i *= numpy.log(-ei)
-        t2i /= ei
-        w_list[2][:] += lib.einsum('jab,kab->jk', t2i, gi).real * 2
-        w_list[2][:] -= lib.einsum('jab,kba->jk', t2i, gi).real
-
-        #for w, eia in zip(w_list, eia_list):
-        #    ei = lib.direct_sum('jb+a->jba', eia, eia[i]) + 1e-8
-        #    t2i = gi.conj() / ei
-        #    w[:] += lib.einsum('jab,kab->jk', t2i, gi).real * 2
-        #    w[:] -= lib.einsum('jab,kba->jk', t2i, gi).real
-
-    for w in w_list:
-        w[:] *= -2
-    exx = -exx_oo.real
-    winf = -winf_oo.real
-    winf = _get_corrected_winf(winf, exx)
-    w_list.append(winf)
-    w_list[1] = agap_oo
-    print("WLIST", w_list)
+    print("TRACE", numpy.trace(w_list[0]), numpy.trace(w_list[1]), numpy.trace(winf_oo))
+    w_list = concatentate_w(exx_oo, w_list, winf_oo[None, :, :])
     numpy.save("w_list.npy", numpy.array(w_list))
-    energy = mp.ac_interpolator(w_list)
+    energy = 2 * mp.ac_interpolator(w_list)
 
     # TODO shouldn't set these to misleading values
     edi = energy
@@ -336,7 +332,7 @@ class ExtractEigNumInterpolator(_EigNumInterpolator):
 class ExtractEigNumInterpolator(_EigNumInterpolator):
     def interpolate(self, alphas, w_list):
         w0 = w_list[0]
-        w1 = w0 / (-w_list[2] * 2)**0.5
+        w1 = w0 / (-w_list[1] * 2)**0.5
         winf = w_list[-1]
         a, b, c, d = 4.627e-01, 1.378e+00, 7.555e-01, 4.852e-01
         bwrs = alphas * w0 * w0 / winf
@@ -409,7 +405,55 @@ class _MatNumInterpolator(_NumACInterpolator):
             )
         self._clear_cache()
         return energy
-    
+
+class ScreenedMatNumInterpolator(_MatNumInterpolator):
+    def get_ac_term(self, alpha):
+        hwrs = alpha**0.5 * self._cache["hwca"] + alpha**0.25 * self._cache["hwdb"]
+        hwrs += alpha * self._cache["aw"]
+        hwrs = 0.5 * (hwrs + hwrs.T)
+        denom = self._cache["id"] + _acmp_matrix_pow(hwrs, 2)
+        denom = _acmp_matrix_pow(denom, 0.5)
+        return alpha * numpy.linalg.solve(denom, self._cache["w0"])
+
+    def interpolate(self, alphas, w_list):
+        w0 = w_list[0]
+        w1 = w0 / (-w_list[1] * 2)**0.5
+        winf = w_list[-1]
+        a, b, c, d = 4.627e-01, 1.378e+00, 7.555e-01, 4.852e-01
+        bwrs = alphas * w0 * w0 / winf
+        hwrs = c * bwrs**0.5 / (1 + a * w0) + d * bwrs**0.25 * w0**0.25 / (1 + b * w0**0.25)
+        hwrs *= numpy.exp((winf / w1)**3 - 1)
+        awrs = alphas * w0 / winf
+        denom = (1 + (awrs + hwrs)**2)**0.5
+        return alphas * w0 / denom
+
+    def _cache_intermediates(self, w_list):
+        self._clear_cache()
+        a, b, c, d = 4.627e-01, 1.378e+00, 7.555e-01, 4.852e-01
+        w0 = 0.5 * (w_list[0] + w_list[0].T)
+        w1 = -1 * (w_list[1] + w_list[1].T)
+        winf = 0.5 * (w_list[-1] + w_list[-1].T)
+        w1 = _acmp_matrix_pow(w1, -0.5)
+        w1 = w0.dot(w1)
+        if w0.size == 1:
+            print(w0, w1, winf)
+        idm = _identity_like(w0)
+        da = _acmp_matrix_pow(idm + a * w0, -1)
+        db = _acmp_matrix_pow(idm + b * _acmp_matrix_pow(w0, 0.25), -1)
+        wm1 = _acmp_matrix_pow(winf, -0.25)
+        dc = c * w0.dot(wm1).dot(wm1)
+        dd = d * _acmp_matrix_pow(w0, 0.75).dot(wm1)
+        hw = _acmp_matrix_pow(winf, 3).dot(_acmp_matrix_pow(w1, -3))
+        hw = _acmp_matrix_exp(0.5 * (hw + hw.T) - idm)
+        aw = w0.dot(_acmp_matrix_pow(wm1, 4))
+        self._cache["aw"] = 0.5 * (aw + aw.T)
+        self._cache["id"] = idm
+        self._cache["w0"] = w0
+        tmp = hw.dot(dc).dot(da)
+        self._cache["hwca"] = 0.5 * (tmp + tmp.T)
+        tmp = hw.dot(dd).dot(db)
+        self._cache["hwdb"] = 0.5 * (tmp + tmp.T)
+
 
 class BasicMatNumInterpolator(_MatNumInterpolator):
     def get_ac_term(self, alpha):
@@ -457,12 +501,87 @@ class WinfMatNumInterpolator2(_MatNumInterpolator):
         return alpha * numpy.linalg.solve(idmat + term, w0)
 
 
+def _contract_paired_(w, t2i, gd, gx):
+    w[:] += lib.einsum('jab,kab->jk', t2i, gd).real
+    w[:] -= lib.einsum('jab,kba->jk', t2i, gx).real * 0.5
+
+
+def _contract_d_only(w, t2i, gd, gx):
+    w[:] += numpy.einsum('iab,jab->ij', t2i, gd) * 0.5
+
+
+def _contract_d_x(w, t2i, gd, gx):
+    _contract_d_only(w, t2i, gd, gx)
+    w[:] -= numpy.einsum('iab,jba->ij', t2i, gx) * 0.5
+
+
+ACMP_CONTRACTTIONS = {
+    ACMP_PAIRED: _contract_paired_,
+    ACMP_D_ONLY: _contract_d_only,
+    ACMP_D_AND_X: _contract_d_x
+}
+
+
+def _contract4_paired_(w, t2, gd, gx):
+    w[:] += lib.einsum('ikab,jkab->ij', t2, gd).real
+    w[:] -= lib.einsum('ikab,jkba->ij', t2, gx).real * 0.5
+
+
+def _contract4_d_only(w, t2, gd, gx):
+    w[:] += lib.einsum('ikab,jkab->ij', t2, gd) * 0.5
+
+
+def _contract4_x_only(w, t2, gd, gx):
+    w[:] -= lib.einsum('ikab,jkba->ij', t2, gx) * 0.5
+
+
+def _contract4_d_x(w, t2, gd, gx):
+    _contract4_d_only(w, t2, gd, gx)
+    _contract4_x_only(w, t2, gd, gx)
+
+
+ACMP_CONTRACTTIONS4 = {
+    ACMP_PAIRED: _contract4_paired_,
+    ACMP_D_ONLY: _contract4_d_only,
+    ACMP_D_AND_X: _contract4_d_x,
+    ACMP_X_ONLY: _contract4_x_only,
+}
+
+
+def add_to_w_list_(mp, w_list, gd, gx, ei, mode):
+    if gd.ndim == 3:
+        assert gx.ndim == ei.ndim == 3
+        contraction = ACMP_CONTRACTTIONS[mode]
+    else:
+        assert gd.ndim == gx.ndim == ei.ndim == 4
+        contraction = ACMP_CONTRACTTIONS4[mode]
+    if len(w_list) > 0:
+        inv_ei = 1.0 / ei
+        t2i = numpy.conj(gd * inv_ei)
+        contraction(w_list[0], t2i, gd, gx)
+    if len(w_list) > 1:
+        t2i *= inv_ei
+        contraction(w_list[1], t2i, gd, gx)
+    if len(w_list) > 2:
+        raise NotImplementedError
+
+
 class ACMP2(MP2):
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None):
         super().__init__(mf, frozen, mo_coeff, mo_occ)
         self.si_limit = "HF"
-        self.agap_model = get_power_of_ws_radius_func(-2, 1.0)
         self.ac_interpolator = None
+        self._numint = MP2NumInt()
+        self.grids = Grids(self._scf.mol)
+        self.grids.level = 3
+
+    def get_pt_list_size(self):
+        return 2
+    
+    def get_df_list_size(self):
+        return 1
+
+    add_to_w_list_ = add_to_w_list_
 
     get_acmp_si_limit = get_acmp_si_limit
 
@@ -479,7 +598,7 @@ class ACMP2(MP2):
             return mf.energy_tot(dm=dm, vhf=vhf)
 
     def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
-        return kernel(self, mo_energy, mo_coeff, eris, with_t2)
+        return kernel(self, mo_energy, mo_coeff, eris, with_t2=False)
 
     def _finalize(self):
         '''Hook for dumping results and clearing up the object.'''

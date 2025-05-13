@@ -21,22 +21,6 @@ from pyscf.acmp.pbc import mp2_numint
 from pyscf.pbc.dft.gen_grid import BeckeGrids
 
 
-def get_acmp_si_limit(mp):
-    if isinstance(mp.si_limit, str) and mp.si_limit == "HF":
-        winf_xx = -0.5 * mp._scf.get_k()
-    else:
-        ni = mp2_numint.MP2NumInt()
-        grids = BeckeGrids(mp._scf.mol)
-        grids.level = 3
-        maxmem = mp._scf.mol.max_memory
-        nelec, excsum, vmat = ni.nr_rmp2(mp._scf.mol, grids, mp.si_limit,
-                                         mp._scf.make_rdm1(), relativity=0,
-                                         hermi=1, max_memory=maxmem,
-                                         verbose=None)
-        winf_xx = vmat
-    return winf_xx
-
-
 class ACRMP2(ac_mp2.ACMP2):
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None):
         if abs(mf.kpt).max() > 1e-9:
@@ -44,8 +28,9 @@ class ACRMP2(ac_mp2.ACMP2):
         from pyscf.pbc.df.df_ao2mo import warn_pbc2d_eri
         warn_pbc2d_eri(mf)
         ac_mp2.ACMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
-
-    get_acmp_si_limit = get_acmp_si_limit
+        self._numint = mp2_numint.MP2NumInt()
+        self.grids = BeckeGrids(self._scf.mol)
+        self.grids.level = 3
 
     def ao2mo(self, mo_coeff=None):
         ao2mofn = _gen_ao2mofn(self._scf)
@@ -59,8 +44,9 @@ class ACUMP2(ac_ump2.ACUMP2):
         from pyscf.pbc.df.df_ao2mo import warn_pbc2d_eri
         warn_pbc2d_eri(mf)
         ac_ump2.ACUMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
-
-    get_acmp_si_limit = get_acmp_si_limit
+        self._numint = mp2_numint.MP2NumInt()
+        self.grids = BeckeGrids(self._scf.mol)
+        self.grids.level = 3
 
     def ao2mo(self, mo_coeff=None):
         ao2mofn = _gen_ao2mofn(self._scf)

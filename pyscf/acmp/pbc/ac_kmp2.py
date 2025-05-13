@@ -7,6 +7,7 @@ from pyscf.lib.parameters import LARGE_DENOM
 from pyscf import __config__
 from pyscf.pbc.mp import kmp2
 import numpy as np
+from pyscf.acmp.ac_mp2 import _acmp_ao2mo, concatentate_w, add_to_w_list_, ACMP_PAIRED, ACMP_D_ONLY, ACMP_X_ONLY
 from pyscf.acmp.pbc.mp2_numint import KMP2NumInt
 from pyscf.pbc.dft.gen_grid import BeckeGrids
 
@@ -53,8 +54,8 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
             naux = mydf.auxcell.nao_nr()
 
         mem_usage += (nkpts**2 * naux * nocc * nvir) * 16 / 1e6
-    if with_t2:
-        mem_usage += (nkpts**3 * (nocc * nvir)**2) * 16 / 1e6
+    # if with_t2:
+    #     mem_usage += (nkpts**3 * (nocc * nvir)**2) * 16 / 1e6
     if mem_usage > mem_avail:
         raise MemoryError('Insufficient memory! MP2 memory usage %d MB (currently available %d MB)'
                           % (mem_usage, mem_avail))
@@ -73,6 +74,7 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     nonzero_opadding, nonzero_vpadding = kmp2.padding_k_idx(mp, kind="split")
 
     if with_t2:
+        raise NotImplementedError
         t2 = np.zeros((nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir), dtype=complex)
     else:
         t2 = None
@@ -81,16 +83,23 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     if with_df_ints:
         Lov = kmp2._init_mp_df_eris(mp)
 
-    winf_k_xx = mp.get_acmp_si_limit()
+    exx_k_xx, winf_k_xx = mp.get_acmp_si_limit()
+
     energy = 0.
     for ki in range(nkpts):
-        print("KINDEX", ki, mp._scf.kpts[ki], len(winf_k_xx))
-        winf_xx = -winf_k_xx[ki]
+        # print("KINDEX", ki, mp._scf.kpts[ki], len(winf_k_xx))
+        # winf_xx = -winf_k_xx[ki]
         # TODO lib.dot if possible
         my_nocc = nocc_list[ki]
-        winf_xo = np.dot(winf_xx, mo_coeff[ki][:, :my_nocc])
-        winf_oo = np.dot(mo_coeff[ki][:, :my_nocc].T.conj(), winf_xo)
-        winf = winf_oo.real
+        w00 = 0
+        w_list = [np.zeros((my_nocc, my_nocc), dtype=np.complex128)
+                  for _ in range(mp.get_pt_list_size())]
+        # winf_xo = np.dot(winf_xx, mo_coeff[ki][:, :my_nocc])
+        # winf_oo = np.dot(mo_coeff[ki][:, :my_nocc].T.conj(), winf_xo)
+        occ_coeff = mo_coeff[ki][:, :my_nocc]
+        exx_oo = _acmp_ao2mo(exx_k_xx[ki], occ_coeff)
+        winf_oo = _acmp_ao2mo(winf_k_xx[ki], occ_coeff)
+        winf = winf_oo
         for kj in range(nkpts):
             for ka in range(nkpts):
                 kb = kconserv[ki,ka,kj]
@@ -124,14 +133,12 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
                 ejb[n0_ovp_jb] = (mo_e_o[kj][:,None] - mo_e_v[kb])[n0_ovp_jb]
 
                 eijab = lib.direct_sum('ia,jb->ijab',eia,ejb)
-                t2_ijab = np.conj(oovv_ij[ka]/eijab)
-                if with_t2:
-                    t2[ki, kj, ka] = t2_ijab
-                edi = einsum('ikab,jkab->ij', t2_ijab, oovv_ij[ka]).real * 2
-                exi = -einsum('ikab,jkba->ij', t2_ijab, oovv_ij[kb]).real
-                w0 = -2 * (edi.real + exi.real)
-                w0 = w0[:my_nocc, :my_nocc]
-                energy += mp.ac_interpolator(w0, winf)
+                mp.add_to_w_list_(w_list, oovv_ij[ka], oovv_ij[kb], eijab, ACMP_PAIRED)
+        # print(exx_oo.shape, w_list[0].shape, w_list[1].shape, winf.shape)
+        print("TRACE", np.trace(w_list[0]), np.trace(w_list[1]), np.trace(winf))
+        w_list = concatentate_w(exx_oo, w_list, winf[None, :, :])
+        energy += 2 * mp.ac_interpolator(w_list).real
+        # energy += mp.ac_interpolator(w0, winf)
 
     log.timer("KMP2", *cput0)
 
@@ -142,12 +149,12 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
 
 
 def get_acmp_si_limit(mp):
+    exx_xx = -0.25 * mp._scf.get_k()
     if isinstance(mp.si_limit, str) and mp.si_limit == "HF":
-        winf_k_xx = -0.5 * mp._scf.get_k()
+        winf_k_xx = exx_xx.copy()
     else:
-        ni = KMP2NumInt()
-        grids = BeckeGrids(mp._scf.mol)
-        grids.level = 3
+        ni = mp._numint
+        grids = mp.grids
         maxmem = mp._scf.mol.max_memory
         mf = mp._scf
         if isinstance(mf.kpts, np.ndarray):
@@ -163,8 +170,8 @@ def get_acmp_si_limit(mp):
                                          kpts=kpts, kpts_band=kpts_band,
                                          hermi=1, max_memory=maxmem,
                                          verbose=None)
-        winf_k_xx = vmat
-    return winf_k_xx
+        winf_k_xx = vmat - exx_xx
+    return exx_xx, winf_k_xx
 
 
 class ACKMP2(kmp2.KMP2):
@@ -172,10 +179,32 @@ class ACKMP2(kmp2.KMP2):
         super().__init__(mf, frozen, mo_coeff, mo_occ)
         self.ac_interpolator = None
         self.si_limit = "HF"
+        self._numint = KMP2NumInt()
+        self.grids = BeckeGrids(self._scf.mol)
+        self.grids.level = 3
 
     get_acmp_si_limit = get_acmp_si_limit
 
+    add_to_w_list_ = add_to_w_list_
+
+    def get_pt_list_size(self):
+        return 2
+    
+    def get_df_list_size(self):
+        return 1
+
+    def get_e_hf(mp, mo_coeff=None):
+        if not hasattr(mp._scf, "to_hf"):
+            # This is HF object
+            return super().get_e_hf(mp, mo_coeff=mo_coeff)
+        else:
+            dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
+            mf = mp._scf.to_hf()
+            vhf = mf.get_veff(mf.mol, dm)
+            return mf.energy_tot(dm=dm, vhf=vhf)
+
     def kernel(self, mo_energy=None, mo_coeff=None, with_t2=WITH_T2):
+        with_t2 = False
         if mo_energy is None:
             mo_energy = self.mo_energy
         if mo_coeff is None:

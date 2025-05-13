@@ -50,7 +50,10 @@ def nr_rmp2(ni, cell, grids, xc_code, dms, spin=0, relativity=0, hermi=1,
                 wv = weight * omega
                 wv = wv[None, :]
                 if xctype != 'LDA':
-                    ao_k1 = [ao[0] for ao in ao_k1]
+                    if isinstance(ao_k1, list):
+                        ao_k1 = [ao[0] for ao in ao_k1]
+                    else:
+                        ao_k1 = ao_k1[0]
                 vmat[i] += ni._vxc_mat(cell, ao_k1, wv, mask, 'LDA',
                                        shls_slice, ao_loc, v_hermi)
 
@@ -127,7 +130,10 @@ def nr_ump2(ni, cell, grids, xc_code, dms, spin=1, relativity=0, hermi=1,
                 # or the _vxcmat should only be called one for efficiency's sake.
                 wv = numpy.stack([wv, wv])
                 if xctype != 'LDA':
-                    ao_k1 = [ao[0] for ao in ao_k1]
+                    if isinstance(ao_k1, list):
+                        ao_k1 = [ao[0] for ao in ao_k1]
+                    else:
+                        ao_k1 = ao_k1[0]
                 vmata[i] += ni._vxc_mat(cell, ao_k1, wv[0], mask, 'LDA',
                                         shls_slice, ao_loc, v_hermi)
                 vmatb[i] += ni._vxc_mat(cell, ao_k1, wv[1], mask, 'LDA',
