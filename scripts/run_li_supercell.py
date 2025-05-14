@@ -1,9 +1,8 @@
 from pyscf.acmp.pbc.kappa_mp2 import KappaRMP2
 from pyscf.pbc.mp.mp2 import RMP2
 from pyscf.pbc.mp.kmp2 import KRMP2
-from pyscf.acmp.ac_mp2 import BasicMatNumInterpolator
+from pyscf.acmp.ac_interpolators import BasicMatNumInterpolator
 from pyscf.acmp.pbc.ac_mp2 import ACRMP2
-# from pyscf.pbc.mp.kappa_ump2 import KappaUMP2, UMP2
 from pyscf.pbc import gto, scf
 from pyscf.pbc import cc
 import numpy as np

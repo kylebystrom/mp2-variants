@@ -39,7 +39,6 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     nocc_list = mp.get_nocc(per_kpoint=True)
     nvir = nmo - nocc
     nkpts = mp.nkpts
-    print("NOCC2", nocc)
 
     with_df_ints = mp.with_df_ints and isinstance(mp._scf.with_df, df.GDF)
 
@@ -91,11 +90,8 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
         # winf_xx = -winf_k_xx[ki]
         # TODO lib.dot if possible
         my_nocc = nocc_list[ki]
-        w00 = 0
         w_list = [np.zeros((my_nocc, my_nocc), dtype=np.complex128)
                   for _ in range(mp.get_pt_list_size())]
-        # winf_xo = np.dot(winf_xx, mo_coeff[ki][:, :my_nocc])
-        # winf_oo = np.dot(mo_coeff[ki][:, :my_nocc].T.conj(), winf_xo)
         occ_coeff = mo_coeff[ki][:, :my_nocc]
         exx_oo = _acmp_ao2mo(exx_k_xx[ki], occ_coeff)
         winf_oo = _acmp_ao2mo(winf_k_xx[ki], occ_coeff)
@@ -134,8 +130,6 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
 
                 eijab = lib.direct_sum('ia,jb->ijab',eia,ejb)
                 mp.add_to_w_list_(w_list, oovv_ij[ka], oovv_ij[kb], eijab, ACMP_PAIRED)
-        # print(exx_oo.shape, w_list[0].shape, w_list[1].shape, winf.shape)
-        print("TRACE", np.trace(w_list[0]), np.trace(w_list[1]), np.trace(winf))
         w_list = concatentate_w(exx_oo, w_list, winf[None, :, :])
         energy += 2 * mp.ac_interpolator(w_list).real
         # energy += mp.ac_interpolator(w0, winf)

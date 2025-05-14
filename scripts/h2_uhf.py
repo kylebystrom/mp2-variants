@@ -1,6 +1,7 @@
 from pyscf import scf, gto
 from pyscf.mp.ump2 import UMP2
-from pyscf.acmp.ac_mp2 import ACMP2, BasicEigNumInterpolator, \
+from pyscf.acmp.ac_mp2 import ACMP2
+from pyscf.acmp.ac_interpolators import BasicEigNumInterpolator, \
         BasicMatNumInterpolator, WinfMatNumInterpolator, \
         WinfMatNumInterpolator2, BalancedEigNumInterpolator, \
         SquareMatNumInterpolator, ScreenedEigNumInterpolator, \
