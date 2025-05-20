@@ -63,7 +63,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         # t2i = gi.conj()/lib.direct_sum('jb+a->jba', eia, eia[i])
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
         maxi = max(numpy.max(ei), maxi)
-        t2i = gi.conj()/ei * (1-numpy.exp(mp.kappa*ei))**2
+        t2i = gi.conj()/ei * mp.get_damping_factor(ei)
         edi = numpy.einsum('jab,jab', t2i, gi) * 2
         exi = -numpy.einsum('jab,jba', t2i, gi)
         emp2_ss += edi*0.5 + exi
@@ -79,13 +79,33 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     return emp2.real, t2
 
 
-class KappaMP2(MP2):
+class KappaMP2Mixin:
+    _keys = {'kappa', 'damping'}
+
+    def __init__(self, kappa, damping):
+        self.kappa = kappa
+        self.damping = damping
+
+    def get_damping_factor(self, delta):
+        # Note delta must be non-positive!
+        # assumes we have e_occ - e_vir for delta
+        if self.damping == "kappa":
+            term = (1 - numpy.exp(self.kappa * delta))
+            term[:] *= term
+            return term
+        elif self.damping == "sigma":
+            return 1 - numpy.exp(-self.kappa * delta * delta)
+        else:
+            raise ValueError("Unrecognized damping: {}".format(self.damping))
+
+
+class KappaMP2(KappaMP2Mixin, MP2):
     '''restricted kappa-MP2 with canonical HF
     '''
-
-    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None, kappa=1.5):
-        super().__init__(mf, frozen, mo_coeff, mo_occ)
-        self.kappa = kappa
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
+                 kappa=1.5, damping="kappa"):
+        MP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
+        KappaMP2Mixin.__init__(self, kappa, damping)
 
     def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         return kernel(self, mo_energy, mo_coeff, eris, with_t2)

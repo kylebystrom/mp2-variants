@@ -19,12 +19,14 @@ from pyscf.mp import ump2
 from pyscf.acmp import kappa_ump2
 
 class KappaRMP2(kappa_mp2.KappaMP2):
-    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None, kappa=1.5):
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
+                 kappa=1.5, damping='kappa'):
         if abs(mf.kpt).max() > 1e-9:
             raise NotImplementedError
         from pyscf.pbc.df.df_ao2mo import warn_pbc2d_eri
         warn_pbc2d_eri(mf)
-        kappa_mp2.KappaRMP2.__init__(self, mf, frozen, mo_coeff, mo_occ, kappa)
+        kappa_mp2.KappaRMP2.__init__(self, mf, frozen, mo_coeff, mo_occ,
+                                     kappa, damping)
 
     def ao2mo(self, mo_coeff=None):
         ao2mofn = _gen_ao2mofn(self._scf)
@@ -32,12 +34,14 @@ class KappaRMP2(kappa_mp2.KappaMP2):
         return eris
 
 class KappaUMP2(kappa_ump2.KappaUMP2):
-    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None, kappa=1.5):
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
+                 kappa=1.5, damping='kappa'):
         if abs(mf.kpt).max() > 1e-9:
             raise NotImplementedError
         from pyscf.pbc.df.df_ao2mo import warn_pbc2d_eri
         warn_pbc2d_eri(mf)
-        kappa_ump2.KappaUMP2.__init__(self, mf, frozen, mo_coeff, mo_occ, kappa)
+        kappa_ump2.KappaUMP2.__init__(self, mf, frozen, mo_coeff, mo_occ,
+                                      kappa, damping)
 
     def ao2mo(self, mo_coeff=None):
         ao2mofn = _gen_ao2mofn(self._scf)

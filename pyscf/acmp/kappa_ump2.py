@@ -23,6 +23,7 @@ import numpy
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf import __config__
+from pyscf.acmp.kappa_mp2 import KappaMP2Mixin
 from pyscf.mp.ump2 import UMP2
 
 WITH_T2 = getattr(__config__, 'mp_mp2_with_t2', True)
@@ -67,7 +68,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
 
         eris_ovov = eris_ovov.reshape(nvira,nocca,nvira).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia_a, eia_a[i])
-        t2i = eris_ovov.conj()/ei * (1-numpy.exp(mp.kappa*ei))**2
+        t2i = eris_ovov.conj()/ei * mp.get_damping_factor(ei)
         emp2_ss += numpy.einsum('jab,jab', t2i, eris_ovov) * .5
         emp2_ss -= numpy.einsum('jab,jba', t2i, eris_ovov) * .5
         if with_t2:
@@ -81,7 +82,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
             eris_ovov = numpy.asarray(eris.ovOV[i*nvira:(i+1)*nvira])
         eris_ovov = eris_ovov.reshape(nvira,noccb,nvirb).transpose(1,0,2)
         ei = lib.direct_sum('a+jb->jab', eia_a[i], eia_b)
-        t2i = eris_ovov.conj()/ei * (1-numpy.exp(mp.kappa*ei))**2
+        t2i = eris_ovov.conj()/ei * mp.get_damping_factor(ei)
         emp2_os += numpy.einsum('JaB,JaB', t2i, eris_ovov)
         if with_t2:
             t2ab[i] = t2i
@@ -95,7 +96,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
             eris_ovov = numpy.asarray(eris.OVOV[i*nvirb:(i+1)*nvirb])
         eris_ovov = eris_ovov.reshape(nvirb,noccb,nvirb).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia_b, eia_b[i])
-        t2i = eris_ovov.conj()/ei * (1-numpy.exp(mp.kappa*ei))**2
+        t2i = eris_ovov.conj()/ei * mp.get_damping_factor(ei)
         emp2_ss += numpy.einsum('jab,jab', t2i, eris_ovov) * .5
         emp2_ss -= numpy.einsum('jab,jba', t2i, eris_ovov) * .5
         if with_t2:
@@ -108,13 +109,13 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     return emp2, t2
 
 
-class KappaUMP2(UMP2):
+class KappaUMP2(KappaMP2Mixin, UMP2):
     '''restricted kappa-MP2 with canonical HF
     '''
-
-    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None, kappa=1.5):
-        super().__init__(mf, frozen, mo_coeff, mo_occ)
-        self.kappa = kappa
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
+                 kappa=1.5, damping="kappa"):
+        UMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
+        KappaMP2Mixin.__init__(kappa, damping)
 
     def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         return kernel(self, mo_energy, mo_coeff, eris, with_t2)
