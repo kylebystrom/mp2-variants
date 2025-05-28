@@ -89,11 +89,11 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
                 kb = kconserv[ki,ka,kj]
 
                 # Remove zero/padded elements from denominator
-                eia = LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
+                eia = -LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
                 n0_ovp_ia = np.ix_(nonzero_opadding[ki], nonzero_vpadding[ka])
                 eia[n0_ovp_ia] = (mo_e_o[ki][:,None] - mo_e_v[ka])[n0_ovp_ia]
 
-                ejb = LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
+                ejb = -LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
                 n0_ovp_jb = np.ix_(nonzero_opadding[kj], nonzero_vpadding[kb])
                 ejb[n0_ovp_jb] = (mo_e_o[kj][:,None] - mo_e_v[kb])[n0_ovp_jb]
 
@@ -120,7 +120,7 @@ class KappaKMP2(KappaMP2Mixin, KMP2):
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
                  kappa=1.5, damping='kappa'):
         KMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
-        KappaKMP2.__init__(kappa, damping)
+        KappaMP2Mixin.__init__(self, kappa, damping)
 
     def kernel(self, mo_energy=None, mo_coeff=None, with_t2=WITH_T2):
         if mo_energy is None:

@@ -27,30 +27,41 @@ from pyscf.mp import mp2
 from pyscf.ao2mo import _ao2mo
 from pyscf import __config__
 from pyscf.mp.ump2 import UMP2
-from pyscf.acmp.ac_mp2 import concatentate_w, \
+from pyscf.acmp.ac_mp2 import concatenate_w, \
     ACMP_D_ONLY, ACMP_D_AND_X, _acmp_ao2mo, MP2NumInt, Grids, \
-    add_to_w_list_
+    add_to_w_list_, get_acmp_df_wlist
 
 WITH_T2 = getattr(__config__, 'mp_ump2_with_t2', True)
 
 
-def get_acmp_si_limit(mp):
-    exx_sxx = -0.5 * mp._scf.get_k()
-    if isinstance(mp.si_limit, str) and mp.si_limit == "HF":
-        winf_sxx = exx_sxx.copy()
+def _get_acmp_df_mat(mp, df_code, mo_coeff):
+    if df_code == "HF":
+        print("EXX")
+        vmat = -0.5 * mp._scf.get_k()
     else:
+        print("VMAT")
         ni = MP2NumInt()
         grids = Grids(mp._scf.mol)
         grids.level = 3
         maxmem = mp._scf.mol.max_memory
-        nelec, excsum, vmat = ni.nr_ump2(mp._scf.mol, grids, mp.si_limit,
+        nelec, excsum, vmat = ni.nr_ump2(mp._scf.mol, grids, df_code,
                                          mp._scf.make_rdm1(), relativity=0,
                                          hermi=1, max_memory=maxmem,
                                          verbose=None)
-        # Reference strong correlation limit to exx
-        winf_sxx = vmat - exx_sxx
-        # winf_xx = vmat
-    return exx_sxx, winf_sxx
+        # vmat does not have spin because strong correlation limit
+        # is spin-independent
+        print(vmat.shape)
+        vmat = numpy.stack([vmat, vmat], axis=0)
+        print(vmat.shape)
+    nocca, noccb = mp.get_nocc()
+    occ_coeffa = mo_coeff[0][:, :nocca]
+    occ_coeffb = mo_coeff[1][:, :noccb]
+    print(occ_coeffa.shape, vmat[0].shape, occ_coeffb.shape, vmat[1].shape)
+    return (
+        _acmp_ao2mo(vmat[0], occ_coeffa),
+        _acmp_ao2mo(vmat[1], occ_coeffb),
+    )
+    # return _acmp_ao2mo(vmat, occ_coeff)
 
 
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
@@ -85,14 +96,8 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     else:
         t2 = None
 
-    exx_sxx, winf_sxx = mp.get_acmp_si_limit()
-    exxa_oo = _acmp_ao2mo(exx_sxx[0], mo_coeff[0][:, :nocca])
-    winfa_oo = _acmp_ao2mo(winf_sxx[0], mo_coeff[0][:, :nocca])
-    exxb_oo = _acmp_ao2mo(exx_sxx[1], mo_coeff[1][:, :noccb])
-    winfb_oo = _acmp_ao2mo(winf_sxx[1], mo_coeff[1][:, :noccb])
-
-    wa_list = [numpy.zeros_like(winfa_oo) for _ in range(mp.get_pt_list_size())]
-    wb_list = [numpy.zeros_like(winfb_oo) for _ in range(mp.get_pt_list_size())]
+    wa_list = [numpy.zeros((nocca, nocca)) for _ in range(mp.get_pt_list_size())]
+    wb_list = [numpy.zeros((noccb, noccb)) for _ in range(mp.get_pt_list_size())]
     for i in range(nocca):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -152,15 +157,20 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         #t2i = eris_ovov.conj()/lib.direct_sum('b+ia->iab', eia_b[i], eia_a)
         #emp2a[:] += numpy.einsum('iaB,jaB->ij', t2i, eris_ovov) * 0.5
 
-    wa_list = concatentate_w(exxa_oo, wa_list, winfa_oo[None, :, :])
-    wb_list = concatentate_w(exxb_oo, wb_list, winfb_oo[None, :, :])
+
+    # wa_list = concatentate_w(exxa_oo, wa_list, winfa_oo[None, :, :])
+    # wb_list = concatentate_w(exxb_oo, wb_list, winfb_oo[None, :, :])
+    wlist_df = mp.get_acmp_df_wlist(mo_coeff)
+    wa_list = concatenate_w(wa_list, [w[0] for w in wlist_df])
+    wb_list = concatenate_w(wb_list, [w[1] for w in wlist_df])
     energy = mp.ac_interpolator(wa_list)
     energy += mp.ac_interpolator(wb_list)
 
     # TODO don't assign misleading values to ss and os
     emp2 = lib.tag_array(energy, e_corr_ss=0, e_corr_os=energy)
 
-    return emp2, t2
+    print("REAL?", emp2.real)
+    return emp2.real, t2
 
 
 class ACUMP2(UMP2):
@@ -168,10 +178,13 @@ class ACUMP2(UMP2):
         super().__init__(mf, frozen, mo_coeff, mo_occ)
         self.si_limit = "HF"
         self.ac_interpolator = None
+        self.df_codes = []
 
-    get_acmp_si_limit = get_acmp_si_limit
+    _get_acmp_df_mat = _get_acmp_df_mat
 
     add_to_w_list_ = add_to_w_list_
+
+    get_acmp_df_wlist = get_acmp_df_wlist
 
     def get_pt_list_size(self):
         return 2

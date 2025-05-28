@@ -6,6 +6,7 @@ from pyscf.dft.numint import (NBINS, _scale_ao_sparse,
 
 
 CFC = 0.3 * (3 * numpy.pi**2)**(2.0 / 3)
+LDAX_FACTOR = -3.0 / 4.0 * (3.0 / numpy.pi) ** (1.0 / 3)
 
 
 def get_power_of_ws_radius_func(power, constant):
@@ -64,6 +65,45 @@ def mgga_plasma_frequency2(rho, prefac=None):
     wp2 = 4 * numpy.pi * rho_eff * invm
     wp2[cond] = 0
     return prefac * numpy.sqrt(wp2)
+
+
+def mgga_sce_limit(rho, prefac=None):
+    rs_inv = ((4 * numpy.pi * rho[0]) / 3.0)**(1.0 / 3)
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / 2**(2.0 / 3)
+    s2 /= 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    tauw = sigma / (8 * rho[0])
+    tau = rho[4]
+    tau0 = CFC * rho[0]**(5.0 / 3)
+    # chi is 1 for 1e, 0 for UEG, -0 as alpha->inf
+    mu = 0.21951
+    kappa = 0.804
+    # maxfac = 1.125
+    # maxfac = 0.896
+    # maxfac = -LDAX_FACTOR * (6.0 / (4 * numpy.pi))**(1.0 / 3)
+    # maxfac = 1.05
+    maxfac = 0.59
+    gradfac = 0.59
+    ldafac = 0.5 * 0.896
+    mypow = 1
+    chi = 2 * tau0**mypow
+    chi /= tau0**mypow + numpy.maximum(tau - tauw, 0)**mypow
+    chi -= 1
+    fac = ldafac + (maxfac - ldafac) * chi
+    fac += gradfac * (kappa - kappa / (1 + mu * s2 / kappa))
+    fac *= rs_inv
+    return -fac
+
+
+def mgga_chi(rho):
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    tauw = sigma / (8 * rho[0] + 1e-8)
+    tau = rho[4]
+    tau0 = CFC * rho[0]**(5.0 / 3)
+    mypow = 2
+    chi = tau0**mypow
+    chi /= tau0**mypow + numpy.maximum(tau - tauw, 0)**mypow + 1e-8
+    return 1 - chi
 
 
 def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,

@@ -28,15 +28,50 @@ def _acmp_matrix_exp(mat, expnt=1.0):
 def _acmp_matrix_pow(mat, mypow):
     eval, evec = np.linalg.eig(mat)
     evec_inv = np.linalg.solve(evec, _identity_like(evec))
-    # eval = np.maximum(eval, 0)
+    eval = np.maximum(eval, 0)
+    eval = np.minimum(eval, 1e10)
     eval = eval**mypow
     return (evec * eval).dot(evec_inv)
 
 
 def _acmp_matrix_exp(mat, expnt=1.0):
     eval, evec = np.linalg.eig(mat)
+    evec_inv = np.linalg.solve(evec, _identity_like(evec))
     eval = np.exp(expnt * eval)
-    return (evec * eval).dot(evec.T)
+    return (evec * eval).dot(evec_inv)
+
+
+class ACMatrix:
+
+    def __init__(self, arr):
+        self._data = arr
+
+    def __mul__(self, other):
+        if isinstance(other, ACMatrix):
+            return ACMatrix(self._data.dot(other._data))
+        else:
+            return ACMatrix(self._data * other)
+
+    def __add__(self, other):
+        if isinstance(other, ACMatrix):
+            return ACMatrix(self._data + other._data)
+        else:
+            return ACMatrix(self._data + other)
+
+    def __div__(self, other):
+        if isinstance(other, ACMatrix):
+            return ACMatrix(np.linalg.solve(other._data, self._data))
+        else:
+            return ACMatrix(self._data / other)
+
+    def __sub__(self, other):
+        if isinstance(other, ACMatrix):
+            return ACMatrix(self._data - other._data)
+        else:
+            return ACMatrix(self._data - other)
+
+    def __pow__(self, power):
+        return ACMatrix(_acmp_matrix_pow(self._data, power))
 
 
 class _ACInterpolator():
@@ -93,7 +128,6 @@ class RegEigNumInterpolator(_EigNumInterpolator):
         awrs = alphas * wr
         bwrs = alphas * w0 * wr
         scr = wr._mpac_erel**0.5
-        print("SCR", scr)
         # a, b, c = 1.624e0, 1.593e0
         a, b, c = 8.474e+00, 7.766e+00, 9.116e+00
         a, b, c = 8.474e+00, 1.766e+00, 2.116e+00
@@ -109,7 +143,6 @@ class RegEigNumInterpolator(_EigNumInterpolator):
         w0 = w_list[0]
         wr = w0 / w_list[-1]
         w1 = w_list[1]
-        print("HIHI")
         awrs = alphas * wr
         bwrs = alphas * w0**2 / w_list[-1]
         a, b, c = 6.363e+00, 1.070e-02, 8.462e+00
@@ -147,7 +180,6 @@ class ExtractEigNumInterpolator(_EigNumInterpolator):
         w0 = w_list[0]
         wr = w0 / w_list[-1]
         winf = w0 / (-w_list[2] * 2)**0.5
-        print(winf, w_list[-1], w0, w_list[2])
         wr = w0 / winf
         return alphas * w0 / (1 + alphas**2 * wr**2)**0.5
     
@@ -160,7 +192,6 @@ class ExtractEigNumInterpolator(_EigNumInterpolator):
         w1 = w1 - w0 * np.log(gap)
         alpha = np.exp(w1 / w0) * gap
         winf = np.sqrt(0.5 * alpha * w0)
-        print(gap, w0, w_list[2], winf, w_list[-1])
         wr = w0 / winf
         return alphas * w0 / (1 + alphas**2 * wr**2)**0.5
 
@@ -198,7 +229,7 @@ class ExtractEigNumInterpolator(_EigNumInterpolator):
         return alphas * w0 / denom
 
 
-class ScreenedEigNumInterpolator(_EigNumInterpolator):
+class _ScreenedEigNumInterpolator(_EigNumInterpolator):
     def interpolate(self, alphas, w_list):
         w0 = w_list[0]
         wr = w0 / w_list[-1]
@@ -230,8 +261,23 @@ class BalancedEigNumInterpolator(_EigNumInterpolator):
         a, b, c = 0, 0, 0
         mix = (1 + a * bwrs)**-0.25
         denom = 1 + b * bwrs**0.5 * mix + (c * awrs)**0.5 * (1 - mix) + awrs
-        print((-self.dalpha * alphas * w0 / denom).sum(axis=0))
         return alphas * w0 / denom
+
+
+class ScreenedEigNumInterpolator(_EigNumInterpolator):
+    def interpolate(self, alphas, w_list):
+        W0s = w_list[0]
+        Winfs = w_list[-1]
+        exxs = w_list[-3]
+        ratio = w_list[-2]**0 * (Winfs / exxs)**2
+        aow = alphas / Winfs
+        term = W0s * aow
+        a, b, c = 3.232e+00, 5.150e+00, 2.099e+00
+        mix = W0s * aow / (b * aow**0.5 + c)
+        mix = ratio / (ratio + mix)
+        term += a * mix * W0s * aow**0.5
+        denom = np.sqrt(1 + term * term)
+        return alphas * W0s / denom
 
 
 class _MatNumInterpolator(_NumACInterpolator):
@@ -240,10 +286,10 @@ class _MatNumInterpolator(_NumACInterpolator):
     
     def _cache_intermediates(self, w_list):
         self._clear_cache()
-        w0 = 0.5 * (w_list[0] + w_list[0].T)
+        w0 = 0.5 * (w_list[0] + w_list[0].T.conj())
         winf = w_list[-1]
         wr = np.linalg.solve(winf, w0)
-        wr = 0.5 * (wr + wr.T)
+        wr = 0.5 * (wr + wr.T.conj())
         self._cache["w0"] = w0
         self._cache["wr"] = wr
         self._cache["id"] = _identity_like(w0)
@@ -268,7 +314,7 @@ class ScreenedMatNumInterpolator(_MatNumInterpolator):
         hwrs = 0.5 * (hwrs + hwrs.T)
         denom = self._cache["id"] + _acmp_matrix_pow(hwrs, 2)
         denom = _acmp_matrix_pow(denom, 0.5)
-        return alpha * np.linalg.solve(denom, self._cache["w0"])
+        return alpha * np.linalg.solve(denom, self._cache["w0"]).real
 
     def interpolate(self, alphas, w_list):
         w0 = w_list[0]

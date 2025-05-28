@@ -89,6 +89,8 @@ class KappaMP2Mixin:
     def get_damping_factor(self, delta):
         # Note delta must be non-positive!
         # assumes we have e_occ - e_vir for delta
+        if (delta > 0).any():
+            raise ValueError("Delta must be non-positive, got {}".format(numpy.max(delta)))
         if self.damping == "kappa":
             term = (1 - numpy.exp(self.kappa * delta))
             term[:] *= term

@@ -115,7 +115,7 @@ class KappaUMP2(KappaMP2Mixin, UMP2):
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
                  kappa=1.5, damping="kappa"):
         UMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
-        KappaMP2Mixin.__init__(kappa, damping)
+        KappaMP2Mixin.__init__(self, kappa, damping)
 
     def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         return kernel(self, mo_energy, mo_coeff, eris, with_t2)

@@ -7,7 +7,9 @@ from pyscf.lib.parameters import LARGE_DENOM
 from pyscf import __config__
 from pyscf.pbc.mp import kmp2
 import numpy as np
-from pyscf.acmp.ac_mp2 import _acmp_ao2mo, concatentate_w, add_to_w_list_, ACMP_PAIRED, ACMP_D_ONLY, ACMP_X_ONLY
+from pyscf.acmp.ac_mp2 import _acmp_ao2mo, concatenate_w, add_to_w_list_, \
+    ACMP_PAIRED, ACMP_D_ONLY, ACMP_X_ONLY
+from pyscf.acmp import ac_mp2
 from pyscf.acmp.pbc.mp2_numint import KMP2NumInt
 from pyscf.pbc.dft.gen_grid import BeckeGrids
 
@@ -37,6 +39,9 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     nmo = mp.nmo
     nocc = mp.nocc
     nocc_list = mp.get_nocc(per_kpoint=True)
+    # nocc_max = np.max(nocc_list)
+    # nocc_min = np.min(nocc_list)
+    # nvir_max = nmo - nocc_min
     nvir = nmo - nocc
     nkpts = mp.nkpts
 
@@ -65,9 +70,14 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     fao2mo = mp._scf.with_df.ao2mo
     kconserv = mp.khelper.kconserv
     oovv_ij = np.zeros((nkpts,nocc,nocc,nvir,nvir), dtype=mo_coeff[0].dtype)
-
     mo_e_o = [mo_energy[k][:nocc] for k in range(nkpts)]
-    mo_e_v = [mo_energy[k][nocc:] for k in range(nkpts)]
+    mo_e_v = [mo_energy[k][nocc:] + 1e-7 for k in range(nkpts)]
+
+    # oovv_ij_buf = np.empty(nkpts * nocc_max * nocc_max * nvir_max * nvir_max,
+    #                        dtype=mo_coeff[0].dtype)
+    # oovv_ij = [None] * nkpts
+    # mo_e_o = [mo_energy[k][:nocc_list[k]] for k in range(nkpts)]
+    # mo_e_v = [mo_energy[k][nocc_list[k]:] + 1e-7 for k in range(nkpts)]
 
     # Get location of non-zero/padded elements in occupied and virtual space
     nonzero_opadding, nonzero_vpadding = kmp2.padding_k_idx(mp, kind="split")
@@ -81,21 +91,19 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     # Build 3-index DF tensor Lov
     if with_df_ints:
         Lov = kmp2._init_mp_df_eris(mp)
+        # print(Lov.shape)
 
-    exx_k_xx, winf_k_xx = mp.get_acmp_si_limit()
+    wlist_df_kpt = mp.get_acmp_df_wlist(mo_coeff)
 
     energy = 0.
+    nocc_list = mp.get_nocc(per_kpoint=True)
     for ki in range(nkpts):
         # print("KINDEX", ki, mp._scf.kpts[ki], len(winf_k_xx))
         # winf_xx = -winf_k_xx[ki]
         # TODO lib.dot if possible
         my_nocc = nocc_list[ki]
-        w_list = [np.zeros((my_nocc, my_nocc), dtype=np.complex128)
+        w_list = [np.zeros((nocc, nocc), dtype=np.complex128)
                   for _ in range(mp.get_pt_list_size())]
-        occ_coeff = mo_coeff[ki][:, :my_nocc]
-        exx_oo = _acmp_ao2mo(exx_k_xx[ki], occ_coeff)
-        winf_oo = _acmp_ao2mo(winf_k_xx[ki], occ_coeff)
-        winf = winf_oo
         for kj in range(nkpts):
             for ka in range(nkpts):
                 kb = kconserv[ki,ka,kj]
@@ -130,7 +138,16 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
 
                 eijab = lib.direct_sum('ia,jb->ijab',eia,ejb)
                 mp.add_to_w_list_(w_list, oovv_ij[ka], oovv_ij[kb], eijab, ACMP_PAIRED)
-        w_list = concatentate_w(exx_oo, w_list, winf[None, :, :])
+
+                # t2 = oovv_ij[ka] - 0.5 * oovv_ij[kb].transpose(0, 1, 3, 2)
+                # t2 = t2.conj() / eijab
+                # t2.shape = (my_nocc, -1)
+                # oovv_ija = oovv_ij[ka].view()
+                # oovv_ija.shape = (my_nocc, -1)
+                # w_list[0] += lib.einsum("ix,jx->ij", t2, oovv_ija)
+        w_list = [w[:my_nocc, :my_nocc] for w in w_list]
+        print("EIGVALS", ki, [np.linalg.eigvalsh(w) for w in w_list])
+        w_list = concatenate_w(w_list, wlist_df_kpt[ki])
         energy += 2 * mp.ac_interpolator(w_list).real
         # energy += mp.ac_interpolator(w0, winf)
 
@@ -142,10 +159,21 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     return emp2, t2
 
 
-def get_acmp_si_limit(mp):
-    exx_xx = -0.25 * mp._scf.get_k()
-    if isinstance(mp.si_limit, str) and mp.si_limit == "HF":
-        winf_k_xx = exx_xx.copy()
+def _acmp_ao2mo_kpt(mp, mat_k_xx, mo_coeff):
+    nocc_list = mp.get_nocc(per_kpoint=True)
+    # nkpts = mp.nkpts
+    nkpts = len(mat_k_xx)
+    mat_k_oo = []
+    for k in range(nkpts):
+        my_nocc = nocc_list[k]
+        occ_coeff = mo_coeff[k][:, :my_nocc]
+        mat_k_oo.append(_acmp_ao2mo(mat_k_xx[k], occ_coeff))
+    return mat_k_oo
+
+
+def _get_acmp_df_mat(mp, df_code, mo_coeff):
+    if df_code == "HF":
+        vmat = -0.25 * mp._scf.get_k()
     else:
         ni = mp._numint
         grids = mp.grids
@@ -159,13 +187,12 @@ def get_acmp_si_limit(mp):
             kpts = mf.kpts.kpts
             kpts_band = mf.kpts.kpts_ibz
             dm = mf.kpts.transform_dm(mf.make_rdm1())
-        nelec, excsum, vmat = ni.nr_rmp2(mf.mol, grids, mp.si_limit,
-                                         dm, relativity=0,
-                                         kpts=kpts, kpts_band=kpts_band,
-                                         hermi=1, max_memory=maxmem,
-                                         verbose=None)
-        winf_k_xx = vmat - exx_xx
-    return exx_xx, winf_k_xx
+        nelec, excsum, vmat = ni.nr_rmp2(mf.mol, grids, df_code,
+                                        dm, relativity=0,
+                                        kpts=kpts, kpts_band=kpts_band,
+                                        hermi=1, max_memory=maxmem,
+                                        verbose=None)
+    return _acmp_ao2mo_kpt(mp, vmat, mo_coeff)
 
 
 class ACKMP2(kmp2.KMP2):
@@ -176,8 +203,17 @@ class ACKMP2(kmp2.KMP2):
         self._numint = KMP2NumInt()
         self.grids = BeckeGrids(self._scf.mol)
         self.grids.level = 3
+        self.df_codes = []
 
-    get_acmp_si_limit = get_acmp_si_limit
+    _get_acmp_df_mat = _get_acmp_df_mat
+
+    def get_acmp_df_wlist(self, mo_coeff):
+        wlist_vk = ac_mp2.get_acmp_df_wlist(self, mo_coeff)
+        nkpts = len(mo_coeff)
+        wlist_kv = []
+        for k in range(nkpts):
+            wlist_kv.append([wlist_k[k] for wlist_k in wlist_vk])
+        return wlist_kv
 
     add_to_w_list_ = add_to_w_list_
 

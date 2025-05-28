@@ -23,7 +23,7 @@ from pyscf.lib import logger, einsum
 from pyscf.lib.parameters import LARGE_DENOM
 from pyscf.pbc.mp import kmp2, kmp2_ksymm
 from pyscf.acmp.pbc import ac_kmp2
-from pyscf.acmp.ac_mp2 import concatentate_w, ACMP_PAIRED, _acmp_ao2mo
+from pyscf.acmp.ac_mp2 import concatenate_w, ACMP_PAIRED, _acmp_ao2mo
 from pyscf.pbc import df
 from pyscf.pbc.lib import kpts as libkpts
 
@@ -78,13 +78,17 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     if with_df_ints:
         Lov = kmp2._init_mp_df_eris(mp)
 
+    mo_coeff_ibz = [mo_coeff[kd.ibz2bz[ibz]] for ibz in range(kd.nkpts_ibz)]
+    wlist_df_kpt = mp.get_acmp_df_wlist(mo_coeff_ibz)
+
     emp2_ss = emp2_os = 0.
     energy = 0.
     nao2mo = 0
     icount = 0
-    exx_k_xx, winf_k_xx = mp.get_acmp_si_limit()
-    exx_k_xx = mp._scf.kpts.transform_dm(exx_k_xx)
-    winf_k_xx = mp._scf.kpts.transform_dm(winf_k_xx)
+    # for i in range(len(wlist_df)):
+    #     wlist_df[i] = mp._scf.kpts.transform_dm(wlist)
+    # exx_k_xx = mp._scf.kpts.transform_dm(exx_k_xx)
+    # winf_k_xx = mp._scf.kpts.transform_dm(winf_k_xx)
     wlist_k = [None] * kd.nkpts_ibz
     ibz2bz = [None] * kd.nkpts_ibz
     for i in range(len(igroup)-1):
@@ -157,15 +161,12 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
             icount += 1
 
     for ki_ibz, w_list in enumerate(wlist_k):
+        my_nocc = nocc_list[ki]
         ki = ibz2bz[ki_ibz]
         wt = kd.weights_ibz[ki_ibz]
-        occ_coeff = mo_coeff[ki][:, :my_nocc]
-        exx_oo = _acmp_ao2mo(exx_k_xx[ki], occ_coeff)
-        winf_oo = _acmp_ao2mo(winf_k_xx[ki], occ_coeff)
-        winf = winf_oo
         for w in w_list:
             w[:] *= 1.0 / (wt * nkpts)
-        w_list = concatentate_w(exx_oo, w_list, winf[None, :, :])
+        w_list = concatenate_w(w_list, wlist_df_kpt[ki_ibz])
         # energy += 2 * mp.ac_interpolator(w_list).real * weight[idx_ibz] * nkpts**3
         energy += 2 * mp.ac_interpolator(w_list).real * wt * nkpts
 
@@ -204,7 +205,6 @@ class KsymAdaptedACKMP2(ac_kmp2.ACKMP2):
             # This is HF object
             return super().get_e_hf(mp, mo_coeff=mo_coeff)
         else:
-            kpts = mp._scf.kpts
             mf = mp._scf.to_hf()
             dm = mp._scf.make_rdm1(mo_coeff, mp._mo_occ_ibz)
             vhf = mf.get_veff(mf.mol, dm)

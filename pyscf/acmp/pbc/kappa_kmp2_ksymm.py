@@ -1,5 +1,6 @@
 from pyscf.acmp.pbc.kappa_kmp2 import KappaKMP2, WITH_T2, logger, LARGE_DENOM, \
-    einsum, lib
+    einsum, lib, df
+from pyscf.acmp.pbc import kappa_kmp2
 from pyscf.pbc.mp import kmp2
 from pyscf.pbc.mp import kmp2_ksymm
 import numpy as np
@@ -7,8 +8,8 @@ import numpy as np
 
 def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     if with_t2:
-        return kmp2_ksymm.kernel_with_t2(mp, mo_energy, mo_coeff, verbose,
-                                         with_t2)
+        return kernel_with_t2(mp, mo_energy, mo_coeff, verbose,
+                              with_t2)
     else:
         t2 = None
 
@@ -44,7 +45,7 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     # Get location of non-zero/padded elements in occupied and virtual space
     nonzero_opadding, nonzero_vpadding = kmp2.padding_k_idx(mp, kind="split")
 
-    kijab, weight, k4_bz2ibz = kd.make_k4_ibz(sym='s2')
+    kijab, weight, k4_bz2ibz = kd.make_k4_ibz(sym='s1')
     _, igroup = np.unique(kijab[:,:2], axis=0, return_index=True)
     igroup = igroup.ravel()
     igroup = list(igroup) + [len(kijab)]
@@ -96,11 +97,11 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
             ka = kijab[j][2]
             kb = kijab[j][3]
             # Remove zero/padded elements from denominator
-            eia = LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
+            eia = -LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
             n0_ovp_ia = np.ix_(nonzero_opadding[ki], nonzero_vpadding[ka])
             eia[n0_ovp_ia] = (mo_e_o[ki][:,None] - mo_e_v[ka])[n0_ovp_ia]
 
-            ejb = LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
+            ejb = -LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
             n0_ovp_jb = np.ix_(nonzero_opadding[kj], nonzero_vpadding[kb])
             ejb[n0_ovp_jb] = (mo_e_o[kj][:,None] - mo_e_v[kb])[n0_ovp_jb]
 
@@ -124,7 +125,16 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     return emp2, t2
 
 
-class KsymAdaptedKMP2(KappaKMP2):
+def kernel_with_t2(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
+    #we need almost all t2 for computing rdm, so simply use kmp2 without symmetry
+    kd = mp.kpts
+    mp.kpts = kd.kpts
+    emp2, t2 = kappa_kmp2.kernel(mp, mo_energy, mo_coeff, verbose, with_t2)
+    mp.kpts = kd
+    return emp2, t2
+
+
+class KsymAdaptedKappaKMP2(KappaKMP2):
     def kernel(self, mo_energy=None, mo_coeff=None, with_t2=WITH_T2):
         if mo_energy is None: mo_energy = self.mo_energy
         if mo_coeff is None: mo_coeff = self.mo_coeff
@@ -138,6 +148,7 @@ class KsymAdaptedKMP2(KappaKMP2):
         # TODO: compute e_hf for non-canonical SCF
         self.e_hf = self._scf.e_tot
 
+        print("KMP2 KERNEL", kernel)
         self.e_corr, self.t2 = \
                 kernel(self, mo_energy, mo_coeff, verbose=self.verbose, with_t2=with_t2)
 
@@ -153,5 +164,3 @@ class KsymAdaptedKMP2(KappaKMP2):
 
     def make_rdm2(self):
         raise NotImplementedError
-
-KRMP2 = KMP2 = KsymAdaptedKMP2

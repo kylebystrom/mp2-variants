@@ -26,6 +26,7 @@ from pyscf import __config__
 from pyscf.mp.mp2 import MP2
 from pyscf.dft.gen_grid import Grids
 from pyscf.acmp.mp2_numint import MP2NumInt, get_power_of_ws_radius_func
+from pyscf.scf.uhf import UHF
 
 WITH_T2 = False
 ACMP_PAIRED = 0
@@ -53,22 +54,44 @@ def _acmp_matrix_pow(mat, mypow):
     return (evec * eval).dot(evec_inv)
 
 
-def get_acmp_si_limit(mp):
-    exx_xx = -0.25 * mp._scf.get_k()
-    if isinstance(mp.si_limit, str) and mp.si_limit == "HF":
-        winf_xx = exx_xx.copy()
+def _get_acmp_df_mat(mp, df_code, mo_coeff):
+    if df_code == "HF":
+        vmat = -0.25 * mp._scf.get_k()
     else:
         ni = mp._numint
         grids = mp.grids
         maxmem = mp._scf.mol.max_memory
-        nelec, excsum, vmat = ni.nr_rmp2(mp._scf.mol, grids, mp.si_limit,
+        nelec, excsum, vmat = ni.nr_rmp2(mp._scf.mol, grids, df_code,
                                          mp._scf.make_rdm1(), relativity=0,
                                          hermi=1, max_memory=maxmem,
                                          verbose=None)
-        # Reference strong correlation limit to exx
-        winf_xx = vmat - exx_xx
-        # winf_xx = vmat
-    return exx_xx, winf_xx
+    nocc = mp.nocc
+    occ_coeff = mo_coeff[:, :nocc]
+    return _acmp_ao2mo(vmat, occ_coeff)
+
+
+def get_acmp_df_wlist(mp, mo_coeff):
+    """
+    Get a list of arrays in the occupied-occupied space.
+    [exx, {df_codes}, si_limit]
+    If si_limit is not "HF", the exx is subtracted,
+    and the si_limit is made non-negative by the
+    _get_corrected_winf function.
+    """
+    wlist_df = []
+    df_codes = ["HF"] + mp.df_codes + [mp.si_limit]
+    for df_code in df_codes:
+        wlist_df.append(mp._get_acmp_df_mat(df_code, mo_coeff))
+    if mp.si_limit != "HF":
+        if isinstance(wlist_df[-1], numpy.ndarray):
+            wlist_df[-1] -= wlist_df[0]
+            # NOTE this needs to be in OO space to work due to orthogonality
+            wlist_df[-1] = _get_corrected_winf(wlist_df[-1], wlist_df[0])
+        else:
+            for w0, w1 in zip(wlist_df[0], wlist_df[-1]):
+                w1[:] -= w0
+                w1[:] = _get_corrected_winf(w1, w0)
+    return wlist_df
 
 
 def get_artificial_gap(mp):
@@ -97,12 +120,10 @@ def _get_corrected_winf(winf, exx):
     return _acmp_matrix_pow(prod, 0.5)
 
 
-def concatentate_w(exx_oo, wlist_pt, wlist_df):
+def concatenate_w(wlist_pt, wlist_df):
     for w in wlist_pt:
         w[:] *= -2
-    exx = -exx_oo.real
-    wlist_df = [-w.real for w in wlist_df]
-    wlist_df[-1] = _get_corrected_winf(wlist_df[-1], exx)
+    wlist_df = [w.real for w in wlist_df]
     w_list = numpy.append(wlist_pt, wlist_df, axis=0)
     return w_list
 
@@ -132,11 +153,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     else:
         t2 = None
 
-    exx_xx, winf_xx = mp.get_acmp_si_limit()
-    occ_coeff = mo_coeff[:, :nocc]
-    exx_oo = _acmp_ao2mo(exx_xx, occ_coeff)
-    winf_oo = _acmp_ao2mo(winf_xx, occ_coeff)
-
     w_list = [numpy.zeros((nocc, nocc)) for _ in range(mp.get_pt_list_size())]
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
@@ -150,8 +166,8 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         ei = lib.direct_sum('jb+a->jba', eia, eia[i]) - 1e-8
         mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED)
 
-    print("TRACE", numpy.trace(w_list[0]), numpy.trace(w_list[1]), numpy.trace(winf_oo))
-    w_list = concatentate_w(exx_oo, w_list, winf_oo[None, :, :])
+    wlist_df = mp.get_acmp_df_wlist(mo_coeff)
+    w_list = concatenate_w(w_list, wlist_df)
     numpy.save("w_list.npy", numpy.array(w_list))
     energy = 2 * mp.ac_interpolator(w_list)
 
@@ -224,7 +240,8 @@ def add_to_w_list_(mp, w_list, gd, gx, ei, mode, wt=1.0):
         t2i = numpy.conj(gd * inv_ei)
         contraction(w_list[0], t2i, gd, gx, wt)
     if len(w_list) > 1:
-        t2i *= inv_ei
+        gd = gd * inv_ei
+        gx = gx * inv_ei
         contraction(w_list[1], t2i, gd, gx, wt)
     if len(w_list) > 2:
         raise NotImplementedError
@@ -238,6 +255,8 @@ class ACMP2(MP2):
         self._numint = MP2NumInt()
         self.grids = Grids(self._scf.mol)
         self.grids.level = 3
+        self.functional_list = []
+        self.df_codes = []
 
     def get_pt_list_size(self):
         return 2
@@ -247,7 +266,9 @@ class ACMP2(MP2):
 
     add_to_w_list_ = add_to_w_list_
 
-    get_acmp_si_limit = get_acmp_si_limit
+    _get_acmp_df_mat = _get_acmp_df_mat
+
+    get_acmp_df_wlist = get_acmp_df_wlist
 
     get_artificial_gap = get_artificial_gap
 

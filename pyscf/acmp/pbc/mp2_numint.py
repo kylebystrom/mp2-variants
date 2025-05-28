@@ -17,8 +17,10 @@ def nr_rmp2(ni, cell, grids, xc_code, dms, spin=0, relativity=0, hermi=1,
     elif xctype == 'GGA':
         ao_deriv = 1
     elif xctype == 'MGGA':
-        if (any(x in xc_code.upper() for x in ('CC06', 'CS', 'BR89', 'MK00'))):
-            raise NotImplementedError('laplacian in meta-GGA method')
+        if isinstance(xc_code, str):
+            if (any(x in xc_code.upper() for x in
+                    ('CC06', 'CS', 'BR89', 'MK00'))):
+                raise NotImplementedError('laplacian in meta-GGA method')
         ao_deriv = 1
     elif xctype == 'HF':
         ao_deriv = 0
