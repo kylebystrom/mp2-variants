@@ -6,13 +6,15 @@ from pyscf.acmp.ac_interpolators import BasicEigNumInterpolator, \
         BasicMatNumInterpolator, WinfMatNumInterpolator, \
         BalancedEigNumInterpolator, SquareEigNumInterpolator, \
         ScreenedEigNumInterpolator, \
-        RegEigNumInterpolator, ExtractEigNumInterpolator
+        RegEigNumInterpolator, ExtractEigNumInterpolator, \
+        ScreenedMatNumInterpolator
 from pyscf.acmp.ac_ump2 import ACUMP2
 import numpy as np
 import matplotlib.pyplot as plt
 from pyscf.cc import CCSD, UCCSD
 import matplotlib
 from pyscf.fci import FCI
+from pyscf.acmp.mp2_numint import mgga_sce_limit, mgga_chi
 
 
 matplotlib.use("QtAgg")
@@ -23,11 +25,15 @@ BASIS = "cc-pvdz"
 
 Ninterp = 4096
 matint = SquareEigNumInterpolator(Ninterp, [])
-#eigint = ScreenedEigNumInterpolator(Ninterp, [])
-eigint = RegEigNumInterpolator(Ninterp, [])
-eigint = ExtractEigNumInterpolator(Ninterp, [])
+eigint = ScreenedEigNumInterpolator(Ninterp, [])
+#eigint = RegEigNumInterpolator(Ninterp, [])
+#eigint = ExtractEigNumInterpolator(Ninterp, [])
+#eigint = ScreenedMatNumInterpolator(Ninterp, [])
 # matint = BasicMatNumInterpolator(Ninterp, [])
-#matint = SquareMatNumInterpolator(Ninterp, [])
+# matint = SquareMatNumInterpolator(Ninterp, [])
+
+silim = ("MGGA", mgga_sce_limit)
+df_codes = [("MGGA", mgga_chi)]
 
 
 def get_mol(r):
@@ -57,9 +63,11 @@ def run_methods(mol):
     else:
         mymp = ACUMP2(mf)
         acmp = ACUMP2(mf)
-    mymp.si_limit = "1.05*GGA_X_PBE"
+    mymp.si_limit = silim
+    mymp.df_codes = df_codes
     mymp.ac_interpolator = matint
-    acmp.si_limit = "1.05*GGA_X_PBE"
+    acmp.si_limit = silim
+    acmp.df_codes = df_codes
     acmp.ac_interpolator = eigint
     mymp.kernel()
     acmp.kernel()
@@ -69,7 +77,7 @@ def run_methods(mol):
     else:
         # mycc = FCI(myhf)
         mycc = UCCSD(mf.to_hf())
-    if True:
+    if False:
         # mycc.kernel()
         _, t1, t2 = mycc.kernel(t1=t1, t2=t2)
         ecc = mycc.e_tot
@@ -85,13 +93,16 @@ def run_methods(mol):
 atm = gto.M(atom="N", basis=BASIS, spin=3, max_memory=100000)
 e0_pbe, e0_acmp, e0_screen, e0_cc = run_methods(atm)
 
+atm = gto.M(atom="N", basis=BASIS, spin=-3, max_memory=100000)
+e0_pbe, e0_acmp, e0_screenm, e0_cc = run_methods(atm)
+print(e0_screenm, e0_screen)
 
 t1 = t2 = dm00 = None
 def run_calc(r):
     mol = get_mol(r)
     return run_methods(mol)
 
-rs = np.linspace(0.9, 4.0, 30)
+rs = np.linspace(0.9, 6.0, 50)
 # rs = np.append(rs, np.linspace(3, 13, 11))
 ehfs = []
 emps = []

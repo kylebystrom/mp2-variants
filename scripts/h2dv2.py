@@ -1,4 +1,4 @@
-from pyscf import scf, gto
+from pyscf import scf, gto, dft
 from pyscf.mp.mp2 import MP2
 from pyscf.acmp.ac_mp2 import ACMP2
 from pyscf.acmp.ac_interpolators import BasicEigNumInterpolator, \
@@ -7,6 +7,7 @@ from pyscf.acmp.ac_interpolators import BasicEigNumInterpolator, \
         SquareMatNumInterpolator, ScreenedEigNumInterpolator, \
         RegEigNumInterpolator, ExtractEigNumInterpolator, \
         ScreenedMatNumInterpolator
+from pyscf.acmp.mp2_numint import mgga_sce_limit, mgga_chi
 import numpy as np
 import matplotlib.pyplot as plt
 from pyscf.cc import CCSD
@@ -26,6 +27,14 @@ mf.kernel()
 e0 = 2 * mf.e_tot
 exx_at = 0.5 * (mf.get_k() * mf.make_rdm1()).sum()
 
+ks = dft.UKS(at)
+ks.xc = "GGA_X_PBE"
+ks.kernel()
+
+ks = dft.UKS(at)
+ks.xc = "PBE"
+ks.kernel()
+
 
 def get_mol(r):
     return gto.M(atom=f"H 0 0 0; H 0 0 {r}", basis=BASIS)
@@ -34,16 +43,17 @@ def get_mol(r):
 from pyscf.dft.libxc import eval_xc
 
 silim = ("GGA", lambda rho: 0.94 * eval_xc("GGA_X_PBE", rho, deriv=0)[0])
-
+df_codes = [("MGGA", mgga_chi)]
+silim = ("MGGA", mgga_sce_limit)
 
 Ninterp = 4096
 #myint = BasicEigNumInterpolator(Ninterp, [])
-#eigint = ScreenedEigNumInterpolator(Ninterp, [])
+eigint = ScreenedEigNumInterpolator(Ninterp, [])
 # eigint = RegEigNumInterpolator(Ninterp, [])
-eigint = ExtractEigNumInterpolator(Ninterp, [])
-matint = BasicMatNumInterpolator(Ninterp, [])
+#eigint = ExtractEigNumInterpolator(Ninterp, [])
+#matint = BasicMatNumInterpolator(Ninterp, [])
 matint = SquareMatNumInterpolator(Ninterp, [])
-# matint = ScreenedMatNumInterpolator(Ninterp, [])
+#eigint = ScreenedMatNumInterpolator(Ninterp, [])
 
 dm0 = None
 t1, t2 = None, None
@@ -64,10 +74,12 @@ def run_calc(r):
     exx = 0.25 * (dm * k).sum()
     mymp = ACMP2(mf)
     mymp.ac_interpolator = matint
-    mymp.si_limit = "1.24*GGA_X_PBE"
+    mymp.df_codes = df_codes
+    mymp.si_limit = silim
     acmp = ACMP2(mf)
     acmp.ac_interpolator = eigint
-    acmp.si_limit = "1.24*GGA_X_PBE"
+    acmp.si_limit = silim
+    acmp.df_codes = df_codes
     rpa = RPA(mf)
     rpa.kernel()
     # acmp.si_limit = silim

@@ -47,9 +47,13 @@ kmf = scf.KRHF(cell, kpts)
 kmf = kmf.density_fit()
 ehf = kmf.kernel()
 
+import time
+t0 = time.monotonic()
 mypt = mp.KMP2(kmf)
 mypt.kernel()
 print("KMP2 energy (per unit cell) =", mypt.e_tot)
+t1 = time.monotonic()
+print("MP2 time", t1 - t0)
 
 #exit()
 #mykmp = KappaRMP2(mf)
