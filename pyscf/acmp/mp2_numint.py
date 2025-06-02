@@ -16,11 +16,38 @@ def get_power_of_ws_radius_func(power, constant):
     return ("LDA", _rs_function)
 
 
+def _rs_function(rho, pow3):
+    return (3.0 / (4 * numpy.pi * rho))**pow3
+
+
+def ueg_hf_plasma_frequency(rho):
+    wp2 = 4 * numpy.pi * rho * (1 + 0.029 / rho**(1.0 / 3))
+    return numpy.sqrt(wp2)
+
+
+def ueg_ks_plasma_frequency(rho):
+    rs32 = _rs_function(rho, -0.5)
+    rsi = _rs_function(rho, -0.33333333)
+    return rs32 + 0.25 * rsi
+
+
+def lda_plasma_helper(rho, prefac=None):
+    if prefac is None:
+        prefac = 1.0
+    rsh = _rs_function(rho, -1.0 / 6)
+    return prefac * (0.8 * rsh + 0.35)
+
+
 def lda_plasma_frequency(rho, prefac=None):
     if prefac is None:
         prefac = numpy.float64(2)**-0.5
-    wp2 = 4 * numpy.pi * rho * (1 + 0.029 / rho**(1.0 / 3))
-    return prefac * numpy.sqrt(wp2)
+    return prefac * ueg_hf_plasma_frequency(rho)
+
+
+def lda_ks_plasma_frequency(rho, prefac=None):
+    if prefac is None:
+        prefac = 1.0
+    return prefac * ueg_ks_plasma_frequency(rho)
 
 
 def gga_plasma_frequency(rho, prefac=None):
@@ -31,8 +58,19 @@ def gga_plasma_frequency(rho, prefac=None):
     wp2 = 4 * numpy.pi * rho[0] * (1 + 0.029 / rho[0]**(1.0 / 3))
     sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
     x = sigma / rho[0]**(8.0 / 3)
-    wp2 /= 1 + 0.4 * x
+    wp2 /= 1 + 0.5 * x
     return prefac * numpy.sqrt(wp2)
+
+
+def gga_ks_plasma_frequency(rho, prefac=None):
+    cond = rho[0] < 1e-9
+    rho[0, cond] = 1e-9
+    if prefac is None:
+        prefac = 1.0
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    x = sigma / rho[0]**(8.0 / 3)
+    gga_fac = 1.0 / (1 + 0.35 * x)**0.5
+    return prefac * ueg_ks_plasma_frequency(rho[0]) * gga_fac
 
 
 def mgga_plasma_frequency(rho, prefac=None):
@@ -65,6 +103,40 @@ def mgga_plasma_frequency2(rho, prefac=None):
     wp2 = 4 * numpy.pi * rho_eff * invm
     wp2[cond] = 0
     return prefac * numpy.sqrt(wp2)
+
+
+def mgga_plasma_frequency2(rho, prefac=None):
+    cond = rho[0] < 1e-9
+    rho[0, cond] = 1e-9
+    if prefac is None:
+        prefac = numpy.float64(3)**-0.5
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    tauw = sigma / (8 * rho[0])
+    tau = rho[4]
+    diff = numpy.maximum((tau - tauw) / CFC, 0)
+    rho_eff = diff / rho[0]**(2.0 / 3)
+    rs32 = _rs_function(rho_eff, -0.5)
+    rsi = _rs_function(rho_eff, -0.33333333)
+    wp = prefac * (rs32 + 0.5 * rsi)
+    wp[cond] = 0
+    return wp
+
+
+def mgga_ks_plasma_frequency(rho, prefac=None):
+    if prefac is None:
+        prefac = 1.0
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    tauw = sigma / (8 * rho[0])
+    tau = rho[4]
+    tau0 = CFC * rho[0]**(5.0 / 3)
+    chi = 2 * tau0**2
+    chi /= tau0**2 + (tau - tauw)**2
+    chi -= 1
+    coeff = -0.2
+    prefac *= 1 + coeff * chi
+    x = sigma / rho[0]**(8.0 / 3)
+    gga_fac = 1.0 / (1 + 0.4 * x)**0.5
+    return prefac * ueg_ks_plasma_frequency(rho[0]) * gga_fac
 
 
 def mgga_sce_limit(rho, prefac=None):
@@ -231,8 +303,8 @@ def nr_ump2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
 
 PLASMA_FREQUENCY_MODELS = {
     "PLASMA_LDA_WP": ("LDA", lda_plasma_frequency),
-    "PLASMA_GGA_WP": ("GGA", gga_plasma_frequency),
-    "PLASMA_MGGA_WP": ("MGGA", mgga_plasma_frequency2),
+    "PLASMA_GGA_WP": ("GGA", gga_ks_plasma_frequency),
+    "PLASMA_MGGA_WP": ("MGGA", mgga_ks_plasma_frequency),
 }
 
 
