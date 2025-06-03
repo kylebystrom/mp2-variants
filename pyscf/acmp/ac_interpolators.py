@@ -42,9 +42,16 @@ def _acmp_matrix_exp(mat, expnt=1.0):
 
 
 class ACMatrix:
+    """Hermitian matrix object supporting some basic operations"""
 
     def __init__(self, arr):
-        self._data = arr
+        self._data = arr.copy()
+        self._data[:] += self._data.T.conj()
+        self._data[:] *= 0.5
+
+    @property
+    def N(self):
+        return self._data.shape[0]
 
     def __mul__(self, other):
         if isinstance(other, ACMatrix):
@@ -55,8 +62,11 @@ class ACMatrix:
     def __add__(self, other):
         if isinstance(other, ACMatrix):
             return ACMatrix(self._data + other._data)
-        else:
+        elif isinstance(other, np.ndarray):
+            assert self._data.shape == other.shape
             return ACMatrix(self._data + other)
+        else:
+            return ACMatrix(self._data + other * np.identity(self.N))
 
     def __div__(self, other):
         if isinstance(other, ACMatrix):
@@ -72,6 +82,15 @@ class ACMatrix:
 
     def __pow__(self, power):
         return ACMatrix(_acmp_matrix_pow(self._data, power))
+
+    def apply(self, func):
+        """
+        Take an arbitrary function of the matrix by the spectral approach
+        (take its eigenvalues and apply the function to the eigenvalues).
+        """
+        evals, evecs = np.linalg.eigh(self._data)
+        evals = func(evals)
+        return (evecs * evals).dot(evecs.T)
 
 
 class _ACInterpolator():
@@ -287,12 +306,14 @@ class _MatNumInterpolator(_NumACInterpolator):
     def _cache_intermediates(self, w_list):
         self._clear_cache()
         w0 = 0.5 * (w_list[0] + w_list[0].T.conj())
-        winf = w_list[-1]
-        wr = np.linalg.solve(winf, w0)
+        winf = 0.5 * (w_list[-1] + w_list[-1].T.conj())
+        w0h = _acmp_matrix_pow(w0, 0.5)
+        wr = w0h.dot(np.linalg.solve(winf, w0h))
         wr = 0.5 * (wr + wr.T.conj())
         self._cache["w0"] = w0
         self._cache["wr"] = wr
         self._cache["id"] = _identity_like(w0)
+        print("CACHE", np.linalg.eigvals(w0), np.linalg.eigvals(wr), np.linalg.eigvals(winf))
     
     def _clear_cache(self):
         self._cache = {}
@@ -300,10 +321,16 @@ class _MatNumInterpolator(_NumACInterpolator):
     def __call__(self, w_list):
         self._cache_intermediates(w_list)
         energy = 0
+        mini, maxi = 0, 0
         for alpha in self.alphas:
+            acterm = self.get_ac_term(alpha)
+            evals = np.linalg.eigvals(acterm)
+            mini = min(np.min(evals), mini)
+            maxi = max(np.max(evals), maxi)
             energy -= self.dalpha * np.trace(
-                self.get_ac_term(alpha)
+                acterm
             )
+        print(mini, maxi)
         self._clear_cache()
         return energy
 

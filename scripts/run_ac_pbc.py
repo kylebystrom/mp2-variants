@@ -25,9 +25,9 @@ mol_strings = [
 
 
 # eigint = ExtractEigNumInterpolator(512, [])
-eigint = ScreenedMatNumInterpolator(512, [])
+# eigint = ScreenedMatNumInterpolator(512, [])
 
-# eigint = BasicEigNumInterpolator(512, [])
+eigint = BasicEigNumInterpolator(512, [])
 # eigint = SquareMatNumInterpolator(512, [])
 
 def set_ac_(acmp):

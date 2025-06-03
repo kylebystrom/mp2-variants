@@ -160,6 +160,7 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
             mp.add_to_w_list_(wlist_k[ki_ibz], oovv_ij[ka], oovv_ij[kb], eijab, ACMP_PAIRED, wt=wt)
             icount += 1
 
+    mp.acmp_wlist = []
     for ki_ibz, w_list in enumerate(wlist_k):
         my_nocc = nocc_list[ki]
         ki = ibz2bz[ki_ibz]
@@ -169,6 +170,7 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
         w_list = concatenate_w(w_list, wlist_df_kpt[ki_ibz])
         # energy += 2 * mp.ac_interpolator(w_list).real * weight[idx_ibz] * nkpts**3
         energy += 2 * mp.ac_interpolator(w_list).real * wt * nkpts
+        mp.acmp_wlist.append(w_list)
 
     emp2_ss /= nkpts
     emp2_os /= nkpts

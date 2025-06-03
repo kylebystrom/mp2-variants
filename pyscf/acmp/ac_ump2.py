@@ -165,6 +165,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     wb_list = concatenate_w(wb_list, [w[1] for w in wlist_df])
     energy = mp.ac_interpolator(wa_list)
     energy += mp.ac_interpolator(wb_list)
+    mp.acmp_wlist = (wa_list, wb_list)
 
     # TODO don't assign misleading values to ss and os
     emp2 = lib.tag_array(energy, e_corr_ss=0, e_corr_os=energy)
@@ -179,6 +180,7 @@ class ACUMP2(UMP2):
         self.si_limit = "HF"
         self.ac_interpolator = None
         self.df_codes = []
+        self.acmp_wlist = None
 
     _get_acmp_df_mat = _get_acmp_df_mat
 

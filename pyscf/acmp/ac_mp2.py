@@ -121,9 +121,12 @@ def _get_corrected_winf(winf, exx):
 
 
 def concatenate_w(wlist_pt, wlist_df):
+    # for w in wlist_pt:
+    #     w[:] *= -2
+    # wlist_df = [w.real for w in wlist_df]
     for w in wlist_pt:
-        w[:] *= -2
-    wlist_df = [w.real for w in wlist_df]
+        w[:] = -1 * (w + w.T.conj())
+    wlist_df = [0.5 * (w + w.T.conj()) for w in wlist_df]
     w_list = numpy.append(wlist_pt, wlist_df, axis=0)
     return w_list
 
@@ -177,6 +180,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     emp2_ss = edi * 0.5 + exi
     emp2_os = edi * 0.5
     emp2 = lib.tag_array(energy, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
+    mp.acmp_wlist = w_list
 
     return emp2.real, t2
 
@@ -203,8 +207,8 @@ ACMP_CONTRACTTIONS = {
 
 
 def _contract4_paired_(w, t2, gd, gx, wt):
-    w[:] += lib.einsum('ikab,jkab->ij', t2, gd).real * wt
-    w[:] -= lib.einsum('ikab,jkba->ij', t2, gx).real * (0.5 * wt)
+    w[:] += lib.einsum('ikab,jkab->ij', t2, gd) * wt
+    w[:] -= lib.einsum('ikab,jkba->ij', t2, gx) * (0.5 * wt)
 
 
 def _contract4_d_only(w, t2, gd, gx, wt):
@@ -257,6 +261,7 @@ class ACMP2(MP2):
         self.grids.level = 3
         self.functional_list = []
         self.df_codes = []
+        self.acmp_wlist = None
 
     def get_pt_list_size(self):
         return 2

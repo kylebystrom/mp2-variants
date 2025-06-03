@@ -71,7 +71,7 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     kconserv = mp.khelper.kconserv
     oovv_ij = np.zeros((nkpts,nocc,nocc,nvir,nvir), dtype=mo_coeff[0].dtype)
     mo_e_o = [mo_energy[k][:nocc] for k in range(nkpts)]
-    mo_e_v = [mo_energy[k][nocc:] + 1e-7 for k in range(nkpts)]
+    mo_e_v = [mo_energy[k][nocc:] for k in range(nkpts)]
 
     # oovv_ij_buf = np.empty(nkpts * nocc_max * nocc_max * nvir_max * nvir_max,
     #                        dtype=mo_coeff[0].dtype)
@@ -96,7 +96,11 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     wlist_df_kpt = mp.get_acmp_df_wlist(mo_coeff)
 
     energy = 0.
+    emp2 = 0
     nocc_list = mp.get_nocc(per_kpoint=True)
+    scaled_kpts = mp._scf.cell.get_scaled_kpts(mp._scf.kpts)
+    print("KPTS", scaled_kpts)
+    wlists_k = []
     for ki in range(nkpts):
         # print("KINDEX", ki, mp._scf.kpts[ki], len(winf_k_xx))
         # winf_xx = -winf_k_xx[ki]
@@ -126,33 +130,56 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
                     ).reshape(nocc,nvir,nocc,nvir).transpose(0,2,1,3) / nkpts
             for ka in range(nkpts):
                 kb = kconserv[ki,ka,kj]
+                kpts = mp._scf.kpts
+                diff = scaled_kpts[ki] + scaled_kpts[kj] - scaled_kpts[ka] - scaled_kpts[kb]
+                diff = diff % 1
+                diff[diff > 0.5] -= 1
+                if np.linalg.norm(diff) > 1e-8:
+                    raise ValueError("Not k-convserving!", kpts[ki], kpts[kj], kpts[ka], kpts[kb], diff)
 
                 # Remove zero/padded elements from denominator
-                eia = LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
+                eia = -1e100 * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
                 n0_ovp_ia = np.ix_(nonzero_opadding[ki], nonzero_vpadding[ka])
                 eia[n0_ovp_ia] = (mo_e_o[ki][:,None] - mo_e_v[ka])[n0_ovp_ia]
 
-                ejb = LARGE_DENOM * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
+                ejb = -1e100 * np.ones((nocc, nvir), dtype=mo_energy[0].dtype)
                 n0_ovp_jb = np.ix_(nonzero_opadding[kj], nonzero_vpadding[kb])
                 ejb[n0_ovp_jb] = (mo_e_o[kj][:,None] - mo_e_v[kb])[n0_ovp_jb]
 
                 eijab = lib.direct_sum('ia,jb->ijab',eia,ejb)
-                mp.add_to_w_list_(w_list, oovv_ij[ka], oovv_ij[kb], eijab, ACMP_PAIRED)
+                # mp.add_to_w_list_(w_list, oovv_ij[ka], oovv_ij[kb], eijab, ACMP_PAIRED)
 
                 # t2 = oovv_ij[ka] - 0.5 * oovv_ij[kb].transpose(0, 1, 3, 2)
-                # t2 = t2.conj() / eijab
-                # t2.shape = (my_nocc, -1)
+                # t2[:] = np.conj(t2 / eijab)
+                # t2.shape = (nocc, -1)
                 # oovv_ija = oovv_ij[ka].view()
-                # oovv_ija.shape = (my_nocc, -1)
-                # w_list[0] += lib.einsum("ix,jx->ij", t2, oovv_ija)
+                # oovv_ija.shape = (nocc, -1)
+                # w_list[0][:] += lib.einsum("ix,jx->ij", t2, oovv_ija).real
+
+                eijab[:] = 1.0 / np.sqrt(-eijab)
+                g = oovv_ij[ka] - 0.5 * oovv_ij[kb].transpose(0, 1, 3, 2)
+                g[:] *= eijab
+                t2 = np.conj(oovv_ij[ka]) * eijab
+                g.shape = (nocc, -1)
+                t2.shape = (nocc, -1)
+                w_list[0][:] -= lib.einsum("ix,jx->ij", t2, g)
+                # w_list[0][:] += lib.einsum("ix,jx->ij", g.conj(), t2.conj())
+                emp2 += lib.einsum("ix,ix->", t2, g)
         w_list = [w[:my_nocc, :my_nocc] for w in w_list]
-        print("EIGVALS", ki, [np.linalg.eigvalsh(w) for w in w_list])
+        print("EIGVALS", ki, [np.linalg.eigvals(w) for w in w_list])
+        print("DIAG", ki, [np.diag(w) for w in w_list])
         w_list = concatenate_w(w_list, wlist_df_kpt[ki])
-        energy += 2 * mp.ac_interpolator(w_list).real
+        print("EIGVALS2", ki, [np.linalg.eigvals(w) for w in w_list])
+        energy += 2 * mp.ac_interpolator(w_list)
+        wlists_k.append(w_list)
+        print(energy, emp2)
+        print()
         # energy += mp.ac_interpolator(w0, winf)
 
     log.timer("KMP2", *cput0)
 
+    mp.acmp_wlist = wlists_k
+    energy = energy.real
     energy /= nkpts
     emp2 = lib.tag_array(energy, e_corr_ss=0, e_corr_os=energy)
 
@@ -204,6 +231,7 @@ class ACKMP2(kmp2.KMP2):
         self.grids = BeckeGrids(self._scf.mol)
         self.grids.level = 3
         self.df_codes = []
+        self.acmp_wlist = None
 
     _get_acmp_df_mat = _get_acmp_df_mat
 

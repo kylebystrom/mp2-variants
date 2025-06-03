@@ -40,6 +40,21 @@ def get_mol(r):
     return gto.M(atom=f"N 0 0 0; N 0 0 {r}", basis=BASIS, max_memory=100000)
 
 
+def read_n2_ref():
+    with open("n2_ref_data.txt", "r") as f:
+        lines = f.readlines()[4:]
+    n2_ref_rs = []
+    n2_ref_ens = []
+    for l in lines:
+        r, e, _ = l.split()
+        n2_ref_rs.append(float(r) * 0.529177)
+        n2_ref_ens.append(-float(e) - 108)
+    for i in range(len(n2_ref_ens)):
+        n2_ref_ens[i] -= n2_ref_ens[-1]
+    return n2_ref_rs[:-1], n2_ref_ens[:-1]
+
+r_exs, e_exs = read_n2_ref()
+
 t1 = t2 = dm00 = None
 def run_methods(mol):
     global dm00, t1, t2
@@ -103,6 +118,7 @@ def run_calc(r):
     return run_methods(mol)
 
 rs = np.linspace(0.9, 6.0, 50)
+rs = np.array(r_exs)
 # rs = np.append(rs, np.linspace(3, 13, 11))
 ehfs = []
 emps = []
@@ -121,6 +137,7 @@ plt.plot(rs, ehfs, label="HF")
 plt.plot(rs, emps, label="ACMP2, w/o screen")
 plt.plot(rs, eacs, label="ACMP2, w/screen")
 plt.plot(rs, eccs, label="CCSD")
+plt.plot(r_exs, e_exs, label="Ref")
 plt.legend()
 plt.title("N2 dissociation Curve")
 plt.xlabel("Bond Length (Angstrom)")
