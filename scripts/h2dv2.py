@@ -93,7 +93,7 @@ def run_calc(r):
         ecorr, ecc, t1, t2 = 0, e0, None, None
     print(mymp.e_tot, acmp.e_tot, ehf, e0)
     print()
-    shutil.copyfile("w_list.npy", f"{r:.3f}_wlist.npy")
+    #shutil.copyfile("w_list.npy", f"{r:.3f}_wlist.npy")
     return mf.e_tot, mymp.e_tot, acmp.e_tot, ecc, rpa.e_corr + ehf
 
 

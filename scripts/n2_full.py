@@ -2,12 +2,7 @@ from pyscf import scf, gto
 from pyscf.mp.mp2 import MP2
 from pyscf.mp.ump2 import UMP2
 from pyscf.acmp.ac_mp2 import ACMP2
-from pyscf.acmp.ac_interpolators import BasicEigNumInterpolator, \
-        BasicMatNumInterpolator, WinfMatNumInterpolator, \
-        BalancedEigNumInterpolator, SquareEigNumInterpolator, \
-        ScreenedEigNumInterpolator, \
-        RegEigNumInterpolator, ExtractEigNumInterpolator, \
-        ScreenedMatNumInterpolator
+from pyscf.acmp.ac_interpolators import get_interpolator
 from pyscf.acmp.ac_ump2 import ACUMP2
 import numpy as np
 import matplotlib.pyplot as plt
@@ -21,16 +16,9 @@ matplotlib.use("QtAgg")
 
 
 BASIS = "cc-pvdz"
-
-
 Ninterp = 4096
-matint = SquareEigNumInterpolator(Ninterp, [])
-eigint = ScreenedEigNumInterpolator(Ninterp, [])
-#eigint = RegEigNumInterpolator(Ninterp, [])
-#eigint = ExtractEigNumInterpolator(Ninterp, [])
-#eigint = ScreenedMatNumInterpolator(Ninterp, [])
-# matint = BasicMatNumInterpolator(Ninterp, [])
-# matint = SquareMatNumInterpolator(Ninterp, [])
+eigint = get_interpolator("E", name="screen")
+matint = get_interpolator("M", name="basic")
 
 silim = ("MGGA", mgga_sce_limit)
 df_codes = [("MGGA", mgga_chi)]
@@ -99,7 +87,7 @@ def run_methods(mol):
         #etrip = mycc.ccsd_t()
         #print("TRIPLES", r, etrip)
     else:
-        ecc = acmp.e_tot
+        ecc = myhf.e_tot
     print("LOOK", mf.e_tot, mymp.e_tot, acmp.e_tot, ecc)
     print()
     return mf.e_tot, mymp.e_corr + ehf, acmp.e_tot, ecc
