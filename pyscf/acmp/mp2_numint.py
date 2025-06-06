@@ -139,6 +139,64 @@ def mgga_ks_plasma_frequency(rho, prefac=None):
     return prefac * ueg_ks_plasma_frequency(rho[0]) * gga_fac
 
 
+def reduced_grad2(sigma, rho):
+    return sigma / (4 * (3 * numpy.pi**2)**(2.0 / 3) * rho**(8.0 / 3))
+
+
+def ef_kappa(mu, c, s2):
+    return c / (1 + s2)
+
+
+def wgea(mu, c, s2, sign=1):
+    kappa = ef_kappa(mu, c, s2)
+    return 1 + sign * (kappa - kappa / (1 + mu * s2 / kappa))
+
+
+def gga_sce_limit(rho, prefac=None):
+    pass
+
+
+def lda_rho(rho, prefac=None):
+    const = 0.95 * -1.44423075 * 0.3125**2 * 2 * CFC
+    return const * rho
+
+
+def mgga_hsq_sce_limit(rho, prefac=None):
+    return mgga_hhh_sce_limit(rho)**2
+
+def mgga_hhh_sce_limit(rho, prefac=None):
+    return -0.3125 * numpy.sqrt(2 * rho[4] / (rho[0] + 1e-8))
+    # -0.3125 * numpy.sqrt(2 * CFC * rho[0]**(5/3) / (rho[0] + 1e-8))
+
+
+def mgga_hhh_sce_limit_chi(rho):
+    return mgga_hhh_sce_limit(rho) * (1 - 0.5 * mgga_chi(rho))
+
+
+def mgga_ueg_sce_limit(rho, lda_const=1.44423075, prefac=None):
+    dens = numpy.maximum(1e-8, rho[0])
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / 2**(2.0 / 3)
+    s2 /= 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    return -lda_const * dens**(1.0 / 3)
+
+
+def mgga_ueg_sce_limit_chi(rho):
+    return mgga_ueg_sce_limit(rho) * mgga_chi(rho)
+
+
+def mgga_sce_gea(rho, lda_const=1.44423075):
+    dens = numpy.maximum(1e-8, rho[0])
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / 2**(2.0 / 3)
+    s2 /= 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    const = 0.0053 * 4 * (3 * numpy.pi ** 2) ** (2.0 / 3) / lda_const
+    return -lda_const * dens**(1.0 / 3) * (wgea(const, 20, s2, sign=-1) - 1)
+
+
+# def mgga_sce_gea_chi(rho, lda_const=1.44423075)
+
+
 def mgga_sce_limit(rho, prefac=None):
     rs_inv = ((4 * numpy.pi * rho[0]) / 3.0)**(1.0 / 3)
     sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
@@ -164,7 +222,13 @@ def mgga_sce_limit(rho, prefac=None):
     fac = ldafac + (maxfac - ldafac) * chi
     fac += gradfac * (kappa - kappa / (1 + mu * s2 / kappa))
     fac *= rs_inv
+    # dens = rho[0].copy()
+    # dens[dens < 1e-6] = 0
+    # return -0.3125 * numpy.sqrt(2 * tau / (rho[0] + 1e-8))
+    # const = 0.0053 * 4 * (3 * numpy.pi ** 2) ** (2.0 / 3) / 1.44423
+    # return -1.44423075 * dens**(1.0 / 3) * wgea(const, 20, s2, sign=-1)
     return -fac
+    # return -2 * ldafac * rs_inv
 
 
 def mgga_chi(rho):
@@ -172,10 +236,10 @@ def mgga_chi(rho):
     tauw = sigma / (8 * rho[0] + 1e-8)
     tau = rho[4]
     tau0 = CFC * rho[0]**(5.0 / 3)
-    mypow = 2
-    chi = tau0**mypow
-    chi /= tau0**mypow + numpy.maximum(tau - tauw, 0)**mypow + 1e-8
-    return 1 - chi
+    taudiff = tau - tauw
+    chi = 2 * taudiff * taudiff
+    chi /= tau0 * tau0 + taudiff * taudiff + 1e-5
+    return chi
 
 
 def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,

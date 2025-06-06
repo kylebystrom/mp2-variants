@@ -38,6 +38,9 @@ def _get_acmp_df_mat(mp, df_code, mo_coeff):
     if df_code == "HF":
         print("EXX")
         vmat = -0.5 * mp._scf.get_k()
+    elif df_code == "KINETIC":
+        vmat = 0.3125**2 * 2 * mp._scf.mol.intor("int1e_kin")
+        vmat = numpy.stack([vmat, vmat], axis=0)
     else:
         print("VMAT")
         ni = MP2NumInt()
@@ -189,7 +192,7 @@ class ACUMP2(UMP2):
     get_acmp_df_wlist = get_acmp_df_wlist
 
     def get_pt_list_size(self):
-        return 2
+        return 1
     
     def get_df_list_size(self):
         return 1

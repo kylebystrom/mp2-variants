@@ -25,7 +25,7 @@ from pyscf.lib import logger
 from pyscf import __config__
 from pyscf.mp.mp2 import MP2
 from pyscf.dft.gen_grid import Grids
-from pyscf.acmp.mp2_numint import MP2NumInt, get_power_of_ws_radius_func
+from pyscf.acmp.mp2_numint import MP2NumInt, get_power_of_ws_radius_func, CFC
 from pyscf.scf.uhf import UHF
 
 WITH_T2 = False
@@ -57,6 +57,8 @@ def _acmp_matrix_pow(mat, mypow):
 def _get_acmp_df_mat(mp, df_code, mo_coeff):
     if df_code == "HF":
         vmat = -0.25 * mp._scf.get_k()
+    elif df_code == "KINETIC":
+        vmat = 0.3125**2 * 2 * mp._scf.mol.intor("int1e_kin")
     else:
         ni = mp._numint
         grids = mp.grids
@@ -82,15 +84,15 @@ def get_acmp_df_wlist(mp, mo_coeff):
     df_codes = ["HF"] + mp.df_codes + [mp.si_limit]
     for df_code in df_codes:
         wlist_df.append(mp._get_acmp_df_mat(df_code, mo_coeff))
-    if mp.si_limit != "HF":
-        if isinstance(wlist_df[-1], numpy.ndarray):
-            wlist_df[-1] -= wlist_df[0]
-            # NOTE this needs to be in OO space to work due to orthogonality
-            wlist_df[-1] = _get_corrected_winf(wlist_df[-1], wlist_df[0])
-        else:
-            for w0, w1 in zip(wlist_df[0], wlist_df[-1]):
-                w1[:] -= w0
-                w1[:] = _get_corrected_winf(w1, w0)
+    if isinstance(wlist_df[0], tuple):
+        # spinpol
+        for w in [wlist_df[0], wlist_df[-1]]:
+            w[0][:] *= -1
+            w[1][:] *= -1
+    else:
+        # non-spinpol
+        wlist_df[0][:] *= -1
+        wlist_df[-1][:] *= -1
     return wlist_df
 
 
@@ -111,13 +113,6 @@ def _acmp_ao2mo(mat_xx, coeff):
     coeff = numpy.ascontiguousarray(coeff)
     mat_xo = lib.dot(mat_xx, coeff)
     return lib.dot(coeff.T.conj(), mat_xo)
-
-
-def _get_corrected_winf(winf, exx):
-    # Make sure winf_oo is positive
-    d = 0.0001
-    prod = winf.T.conj().dot(winf) + d * exx.T.conj().dot(exx)
-    return _acmp_matrix_pow(prod, 0.5)
 
 
 def concatenate_w(wlist_pt, wlist_df):
@@ -166,12 +161,16 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
             gi = numpy.asarray(eris.ovov[i*nvir:(i+1)*nvir])
 
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
-        ei = lib.direct_sum('jb+a->jba', eia, eia[i]) - 1e-8
+        ei = lib.direct_sum('jb+a->jba', eia, eia[i])
+        # ei[:] *= -1
+        # gi = gi / numpy.sqrt(ei)
+        # mp.add_to_w_list_(w_list, gi, gi, numpy.ones_like(ei), ACMP_PAIRED)
         mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED)
 
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)
+    # w_list[0] *= -1
     w_list = concatenate_w(w_list, wlist_df)
-    numpy.save("w_list.npy", numpy.array(w_list))
+    print(w_list)
     energy = 2 * mp.ac_interpolator(w_list)
 
     # TODO shouldn't set these to misleading values
@@ -264,9 +263,6 @@ class ACMP2(MP2):
         self.acmp_wlist = None
 
     def get_pt_list_size(self):
-        return 2
-    
-    def get_df_list_size(self):
         return 1
 
     add_to_w_list_ = add_to_w_list_
@@ -280,7 +276,7 @@ class ACMP2(MP2):
     def get_e_hf(mp, mo_coeff=None):
         if not hasattr(mp._scf, "to_hf"):
             # This is HF object
-            return super().get_e_hf(mp, mo_coeff=mo_coeff)
+            return super().get_e_hf(mo_coeff=mo_coeff)
         else:
             dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
             mf = mp._scf.to_hf()
