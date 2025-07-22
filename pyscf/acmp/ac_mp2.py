@@ -170,7 +170,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)
     # w_list[0] *= -1
     w_list = concatenate_w(w_list, wlist_df)
-    print(w_list)
+    print("SUMS_SLOW", [numpy.diag(w).mean() for w in w_list])
     energy = 2 * mp.ac_interpolator(w_list)
 
     # TODO shouldn't set these to misleading values

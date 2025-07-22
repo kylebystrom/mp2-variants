@@ -109,7 +109,7 @@ class ACMatrix:
         if isinstance(other, ACMatrix):
             return ACMatrix(self._data - other._data)
         else:
-            return ACMatrix(self._data - other)
+            return ACMatrix(self._data - other * np.identity(self.N))
 
     def __rsub__(self, other):
         res = self.__sub__(other)
@@ -129,7 +129,7 @@ class ACMatrix:
         """
         evals, evecs = np.linalg.eigh(self._data)
         evals = func(evals)
-        return (evecs * evals).dot(evecs.T)
+        return ACMatrix((evecs * evals).dot(evecs.T))
 
     def __repr__(self):
         return repr(self._data).replace("array", "ACMat")
@@ -181,8 +181,8 @@ class ACW:
         if is_mat:
             for w in w_list:
                 assert isinstance(w, ACMatrix)
-            print("EVALS", [np.linalg.eigvals(w._data) for w in w_list])
-            print("EVALS", [np.linalg.eigvals((w**2)._data) for w in w_list])
+            # print("EVALS", [np.linalg.eigvals(w._data) for w in w_list])
+            # print("EVALS", [np.linalg.eigvals((w**2)._data) for w in w_list])
         else:
             for w in w_list:
                 assert isinstance(w, np.ndarray) and w.ndim == 1
@@ -247,7 +247,7 @@ class ScreenACW(ACW):
 class ACInterpolator:
     def __init__(self, nalpha=None, mode=None, acw=None):
         if nalpha is None:
-            nalpha = 1024
+            nalpha = 512
         if mode is None:
             mode = "M"
         else:

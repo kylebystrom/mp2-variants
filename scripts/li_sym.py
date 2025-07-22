@@ -3,7 +3,7 @@ from pyscf.pbc.gto.cell import fromfile
 
 a, atom = fromfile("Li.poscar")
 # Uncomment in new version to trigger warning and OOM error
-atom = atom.replace("1.71965623", "1.71966")
+atom = atom.replace("1.71965623", "1.69")
 
 cell = gto.Cell(
     a=a,

@@ -157,20 +157,30 @@ def gga_sce_limit(rho, prefac=None):
 
 
 def lda_rho(rho, prefac=None):
-    const = 0.95 * -1.44423075 * 0.3125**2 * 2 * CFC
+    const = -1.44423075 * 0.3125**2 * 2 * CFC
     return const * rho
 
 
 def mgga_hsq_sce_limit(rho, prefac=None):
     return mgga_hhh_sce_limit(rho)**2
 
+
 def mgga_hhh_sce_limit(rho, prefac=None):
-    return -0.3125 * numpy.sqrt(2 * rho[4] / (rho[0] + 1e-8))
+    return -0.3125 * numpy.sqrt(2 * rho[4] / (rho[0] + 1e-16))
     # -0.3125 * numpy.sqrt(2 * CFC * rho[0]**(5/3) / (rho[0] + 1e-8))
 
 
 def mgga_hhh_sce_limit_chi(rho):
     return mgga_hhh_sce_limit(rho) * (1 - 0.5 * mgga_chi(rho))
+
+
+def gga_hsq_sce_limit(rho, prefac=None):
+    return gga_hhh_sce_limit(rho)**2
+
+
+def gga_hhh_sce_limit(rho, prefac=None):
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    return -0.3125 * numpy.sqrt(sigma / (4 * rho[0]**2 + 1e-16))
 
 
 def mgga_ueg_sce_limit(rho, lda_const=1.44423075, prefac=None):
@@ -214,7 +224,7 @@ def mgga_sce_limit(rho, prefac=None):
     # maxfac = 1.05
     maxfac = 0.59
     gradfac = 0.59
-    ldafac = 0.5 * 0.896
+    ldafac = 0.896
     mypow = 1
     chi = 2 * tau0**mypow
     chi /= tau0**mypow + numpy.maximum(tau - tauw, 0)**mypow
@@ -238,7 +248,7 @@ def mgga_chi(rho):
     tau0 = CFC * rho[0]**(5.0 / 3)
     taudiff = tau - tauw
     chi = 2 * taudiff * taudiff
-    chi /= tau0 * tau0 + taudiff * taudiff + 1e-5
+    chi /= tau0 * tau0 + taudiff * taudiff + 1e-32
     return chi
 
 
