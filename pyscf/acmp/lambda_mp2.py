@@ -14,33 +14,6 @@ def _lmp_matrix_pow(mat, mypow):
     return (evec * eval).dot(evec.T)
 
 
-def get_artificial_gap_simple(self, mf):
-    mol = mf.mol
-    dm = mf.make_rdm1()
-    nelec, excsum, vmat = self._numint.nr_rmp2(
-        mol, self.grids, self.omega_code, dm
-    )
-    return vmat
-
-
-def get_artificial_gap_with_exx(self, mf):
-    mol = mf.mol
-    dm = mf.make_rdm1()
-    kmat = 0.25 * mf.get_k()
-    sce = self._numint.nr_rmp2(
-        mol, self.grids, ("MGGA", mgga_sce_limit), dm
-    )[2]
-    mul = self._numint.nr_rmp2(
-        mol, self.grids, self.omega_code, dm
-    )[2]
-    return kmat, sce, mul
-    sce = (-sce - kmat)
-    sce = sce.dot(sce) + 0.0001 * kmat.dot(kmat)
-    sce = _lmp_matrix_pow(sce, 0.5)
-    vmat = mul.dot(sce)
-    return 0.5 * (vmat + vmat.T)
-
-
 class LambdaMP2(MP2):
     _keys = {
         'omega_code', 'grids'
@@ -55,6 +28,30 @@ class LambdaMP2(MP2):
         self.grids = gen_grid.Grids(self.mol)
         self.grids.level = getattr(
             __config__, 'dft_rks_RKS_grids_level', self.grids.level)
+
+    def get_1e_vmat(self, code):
+        mf = self._scf
+        if code == "__HF__":
+            return 0.5 * mf.get_k()
+        mol = mf.mol
+        dm = mf.make_rdm1()
+        nelec, excsum, vmat = self._numint.nr_rmp2(mol, self.grids, code, dm)
+        return vmat
+
+    def get_artificial_gap_simple(self):
+        return self.get_1e_vmat(self.omega_code)
+
+    def get_artificial_gap_with_exx(self):
+        kmat = 0.5 * self.get_1e_vmat("__HF__")
+        sce = self.get_1e_vmat(("MGGA", mgga_sce_limit))
+        mul = self.get_1e_vmat(self.omega_code)
+        return kmat, sce, mul
+
+    def get_artificial_gap(self):
+        if False:
+            return self.get_artificial_gap_simple()
+        else:
+            return self.get_artificial_gap_with_exx()
 
     def get_e_hf(mp, mo_coeff=None):
         if not hasattr(mp._scf, "to_hf"):
