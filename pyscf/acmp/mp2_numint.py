@@ -378,7 +378,7 @@ def nr_ump2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
 PLASMA_FREQUENCY_MODELS = {
     "PLASMA_LDA_WP": ("LDA", lda_plasma_frequency),
     "PLASMA_GGA_WP": ("GGA", gga_ks_plasma_frequency),
-    "PLASMA_MGGA_WP": ("MGGA", mgga_ks_plasma_frequency),
+    "PLASMA_MGGA_WP": ("MGGA", mgga_plasma_frequency),
 }
 
 

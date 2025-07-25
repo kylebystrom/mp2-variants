@@ -35,26 +35,7 @@ ACMP_X_ONLY = 3
 ACMP_D_AND_X = 2
 
 
-def _identity_like(m):
-    return numpy.identity(m.shape[0])
-
-
-def _acmp_matrix_pow(mat, mypow):
-    eval, evec = numpy.linalg.eigh(mat)
-    eval = numpy.maximum(eval, 0)
-    eval = eval**mypow
-    return (evec * eval).dot(evec.T)
-
-
-def _acmp_matrix_pow(mat, mypow):
-    eval, evec = numpy.linalg.eig(mat)
-    evec_inv = numpy.linalg.solve(evec, _identity_like(evec))
-    # eval = numpy.maximum(eval, 0)
-    eval = eval**mypow
-    return (evec * eval).dot(evec_inv)
-
-
-def _get_acmp_df_mat(mp, df_code, mo_coeff):
+def get_acmp_df_mat(mp, df_code, mo_coeff):
     if df_code == "HF":
         vmat = -0.25 * mp._scf.get_k()
     elif df_code == "KINETIC":
@@ -83,7 +64,7 @@ def get_acmp_df_wlist(mp, mo_coeff):
     wlist_df = []
     df_codes = ["HF"] + mp.df_codes + [mp.si_limit]
     for df_code in df_codes:
-        wlist_df.append(mp._get_acmp_df_mat(df_code, mo_coeff))
+        wlist_df.append(mp.get_acmp_df_mat(df_code, mo_coeff))
     if isinstance(wlist_df[0], tuple):
         # spinpol
         for w in [wlist_df[0], wlist_df[-1]]:
@@ -96,18 +77,6 @@ def get_acmp_df_wlist(mp, mo_coeff):
     return wlist_df
 
 
-def get_artificial_gap(mp):
-    ni = MP2NumInt()
-    grids = Grids(mp._scf.mol)
-    grids.level = 3
-    maxmem = mp._scf.mol.max_memory
-    nelec, excsum, vmat = ni.nr_rmp2(mp._scf.mol, grids, mp.agap_model,
-                                     mp._scf.make_rdm1(), relativity=0,
-                                     hermi=1, max_memory=maxmem,
-                                     verbose=None)
-    return vmat
-
-
 def _acmp_ao2mo(mat_xx, coeff):
     mat_xx = numpy.ascontiguousarray(mat_xx)
     coeff = numpy.ascontiguousarray(coeff)
@@ -116,9 +85,6 @@ def _acmp_ao2mo(mat_xx, coeff):
 
 
 def concatenate_w(wlist_pt, wlist_df):
-    # for w in wlist_pt:
-    #     w[:] *= -2
-    # wlist_df = [w.real for w in wlist_df]
     for w in wlist_pt:
         w[:] = -1 * (w + w.T.conj())
     wlist_df = [0.5 * (w + w.T.conj()) for w in wlist_df]
@@ -126,7 +92,7 @@ def concatenate_w(wlist_pt, wlist_df):
     return w_list
 
 
-def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
+def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
     if mo_energy is not None or mo_coeff is not None:
         # For backward compatibility.  In pyscf-1.4 or earlier, mp.frozen is
         # not supported when mo_energy or mo_coeff is given.
@@ -162,15 +128,16 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
 
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
-        # ei[:] *= -1
-        # gi = gi / numpy.sqrt(ei)
-        # mp.add_to_w_list_(w_list, gi, gi, numpy.ones_like(ei), ACMP_PAIRED)
         mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED)
+    
+    return w_list, t2
+
+
+def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
+    w_list, t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
 
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)
-    # w_list[0] *= -1
     w_list = concatenate_w(w_list, wlist_df)
-    print("SUMS_SLOW", [numpy.diag(w).mean() for w in w_list])
     energy = 2 * mp.ac_interpolator(w_list)
 
     # TODO shouldn't set these to misleading values
@@ -267,11 +234,9 @@ class ACMP2(MP2):
 
     add_to_w_list_ = add_to_w_list_
 
-    _get_acmp_df_mat = _get_acmp_df_mat
+    get_acmp_df_mat = get_acmp_df_mat
 
     get_acmp_df_wlist = get_acmp_df_wlist
-
-    get_artificial_gap = get_artificial_gap
 
     def get_e_hf(mp, mo_coeff=None):
         if not hasattr(mp._scf, "to_hf"):

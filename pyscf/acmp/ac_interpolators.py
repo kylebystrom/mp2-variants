@@ -162,6 +162,16 @@ def _get_corrected_winf(winf, exx):
     return prod**0.5   # _acmp_matrix_pow(prod, 0.5)
 
 
+def _check_fmt(w_list):
+    is_mat = isinstance(w_list[0], ACMatrix)
+    if is_mat:
+        for w in w_list:
+            assert isinstance(w, ACMatrix)
+    else:
+        for w in w_list:
+            assert isinstance(w, np.ndarray) and w.ndim == 1
+
+
 class ACW:
     """
     Adiabatic Connection function
@@ -177,15 +187,7 @@ class ACW:
         return [p for p in self._params]
 
     def compute_cache(self, w_list):
-        is_mat = isinstance(w_list[0], ACMatrix)
-        if is_mat:
-            for w in w_list:
-                assert isinstance(w, ACMatrix)
-            # print("EVALS", [np.linalg.eigvals(w._data) for w in w_list])
-            # print("EVALS", [np.linalg.eigvals((w**2)._data) for w in w_list])
-        else:
-            for w in w_list:
-                assert isinstance(w, np.ndarray) and w.ndim == 1
+        _check_fmt(w_list)
         self.clear_cache()
         winf = _get_corrected_winf(w_list[-1], w_list[1])
         self._cache["w0"] = w_list[0]
@@ -285,3 +287,82 @@ class ACInterpolator:
                 acterm = self._acw(alpha).get_data_view()
                 energy -= self.dalpha * np.trace(acterm)
             return energy
+
+
+class BaseGapModel:
+    """
+    lambda-MP2 artificial gap function
+    """
+    def __init__(self, params=None, needs_mp2_mat=False):
+        if params is None:
+            params = []
+        self._params = params
+        self._needs_mp2 = needs_mp2_mat
+
+    @property
+    def needs_mp2_mat(self):
+        return self._needs_mp2
+
+    def __call__(self, w_list):
+        raise NotImplementedError
+
+
+class AnyGapModel(BaseGapModel):
+    def __init__(self, call=None, needs_mp2_mat=False):
+        self._call = call
+        super().__init__(needs_mp2_mat=needs_mp2_mat)
+
+    def __call__(self, w_list):
+        return self._call(w_list)
+
+
+class BasicGapModel(BaseGapModel):
+    def __init__(self, needs_mp2_mat=False):
+        super().__init__(params=None, needs_mp2_mat=needs_mp2_mat)
+    
+    def __call__(self, w_list):
+        return w_list[0]
+
+
+class ArtificialGapCalculator:
+    def __init__(self, mode=None, gap_model=None):
+        if mode is None:
+            mode = "M"
+        else:
+            mode = "E"
+        assert mode in ["M", "E"]
+        if gap_model is None:
+            gap_model = BasicGapModel()
+        elif not isinstance(gap_model, BaseGapModel):
+            if isinstance(gap_model, tuple):
+                assert len(gap_model) == 2
+                call, needs_mp2 = gap_model
+            else:
+                call = gap_model
+                needs_mp2 = False
+            assert callable(call)
+            gap_model = AnyGapModel(call, needs_mp2)
+        self.gap_model = gap_model
+        self.mode = mode
+    
+    @property
+    def requires_mp2_mat(self):
+        return self.gap_model.needs_mp2_mat
+    
+    def compute_artificial_gap(self, w_list):
+        if self.mode == "E":
+            _w_list = w_list
+            w_list = []
+            for w in _w_list:
+                if w.ndim == 1:
+                    w_list.append(w)
+                else:
+                    w_list.append(np.diag(w))
+            w_list = [w for w in w_list]
+        else:
+            w_list = [ACMatrix(w) for w in w_list]
+        result = self.gap_model(w_list)
+        if self.mode == "E":
+            return result
+        else:
+            return result._data
