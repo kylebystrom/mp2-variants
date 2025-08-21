@@ -79,6 +79,7 @@ def run_ueg_calc(**settings):
     nelec = 2 * MAGIC_NUMBERS[nelec_index]
     nbas = MAGIC_NUMBERS[settings["nbas_index"]]
     rs = settings["ws_radius"]
+    print("WS RADIUS", rs)
 
     t0 = time.monotonic()
     my_ueg = ueg.UEG(nelec, nbas, rs, verbose=False)
@@ -188,6 +189,7 @@ def run_ueg_calc(**settings):
     elif STYLE == "ac":
         res_shape = (len(eig_o),)
     res = numpy.empty(res_shape, dtype=numpy.float64)
+    print(res.size)
     args = [
         ctypes.c_int(eig_o.size),
         g_o.ctypes.data_as(ctypes.c_void_p),
@@ -222,6 +224,7 @@ def run_ueg_calc(**settings):
     else:
         e_kin = numpy.mean(ekins_o)
         e_exch = 0.5 * numpy.mean(eigk_o)
+        print("ENERGY TERMS", res / nelec)
         return numpy.append([e_kin, e_exch], [res[-1] / nelec])
 
 
@@ -243,6 +246,7 @@ def post_process(method, ueg_result):
             w_list.append(res)
         w_list[-1] *= -1
         w_list[0] *= -1
+        w_list[1] *= -1
         print("SUMS", [w.mean() for w in w_list])
         ec = aci([numpy.diag(w) for w in w_list])
         print("ECORR TOTAL", 2 * ec)

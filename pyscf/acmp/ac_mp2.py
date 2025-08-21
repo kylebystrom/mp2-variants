@@ -134,6 +134,10 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
 
 
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
+    if eris is None:
+        eris = mp.ao2mo(mo_coeff)
+    if mo_coeff is None:
+        mo_coeff = eris.mo_coeff
     w_list, t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
 
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)

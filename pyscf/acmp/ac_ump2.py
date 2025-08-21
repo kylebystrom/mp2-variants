@@ -146,6 +146,10 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
 
 
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
+    if eris is None:
+        eris = mp.ao2mo(mo_coeff)
+    if mo_coeff is None:
+        mo_coeff = eris.mo_coeff
     (wa_list, wb_list), t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)
     wa_list = concatenate_w(wa_list, [w[0] for w in wlist_df])
@@ -184,7 +188,7 @@ class ACUMP2(UMP2):
     def get_e_hf(mp, mo_coeff=None):
         if not hasattr(mp._scf, "to_hf"):
             # This is HF object
-            return super().get_e_hf(mp, mo_coeff=mo_coeff)
+            return super().get_e_hf(mo_coeff=mo_coeff)
         else:
             dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
             mf = mp._scf.to_hf()

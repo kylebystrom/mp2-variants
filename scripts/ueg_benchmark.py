@@ -123,35 +123,37 @@ def main():
         return tmp * oo_screen
     gap_model = (get_vmat, True)
 
-    k_method1 = lambda mf: driver.UEGKappaMP2(mf, kappa=1.5, damping="kappa")
-    k_method2 = {"name": "kappa", "param": 1.5}
-    
-    l_method1 = lambda mf: driver.UEGLambdaMP2(mf, gap_mode="M", gap_model=gap_model)
-    l_method2 = {"name": "lambda", "gap_model": gap_model, "df_codes": []}
+    version = "a"
 
-    params = [ 1.266e+00, 4.554e+00, -8.453e-01, 5.427e+00, 2.356e+00,
-              -1.601e-01, 2.703e-01]
-    acw = MyACW(params)
-    df_codes = [("MGGA", mgga_chi), ("GGA", gga_hsq_sce_limit),
-                ("LDA", lda_rho)]
-    silim = ("MGGA", mgga_hsq_sce_limit)
+    if version == "k":
+        k_method1 = lambda mf: driver.UEGKappaMP2(mf, kappa=1.5, damping="kappa")
+        k_method2 = {"name": "kappa", "param": 1.5}
+        res, errs, summary = print_errs(k_method1, k_method2)
+    elif version == "l":
+        l_method1 = lambda mf: driver.UEGLambdaMP2(mf, gap_mode="M", gap_model=gap_model)
+        l_method2 = {"name": "lambda", "gap_model": gap_model, "df_codes": []}
+        res, errs, summary = print_errs(l_method1, l_method2)
+    else:
+        params = [ 1.266e+00, 4.554e+00, -8.453e-01, 5.427e+00, 2.356e+00,
+                  -1.601e-01, 2.703e-01]
+        acw = MyACW(params)
+        df_codes = [("MGGA", mgga_chi), ("GGA", gga_hsq_sce_limit),
+                    ("LDA", lda_rho)]
+        silim = ("MGGA", mgga_hsq_sce_limit)
 
-    m_interp = ACInterpolator(512, "M", acw)
-    e_interp = ACInterpolator(512, "E", acw)
+        m_interp = ACInterpolator(512, "M", acw)
+        e_interp = ACInterpolator(512, "E", acw)
 
-    def get_acmp2(mf):
-        acmp = driver.UEGACMP2(mf)
-        acmp.df_codes = df_codes
-        acmp.si_limit = silim
-        acmp.ac_interpolator = e_interp
-        return acmp
+        def get_acmp2(mf):
+            acmp = driver.UEGACMP2(mf)
+            acmp.df_codes = df_codes
+            acmp.si_limit = silim
+            acmp.ac_interpolator = e_interp
+            return acmp
 
-    a_method1 = get_acmp2
-    a_method2 = {"name": "ac", "aci": e_interp, "df_codes": df_codes, "silim": silim}
-    
-    # res, errs, summary = print_errs(k_method1, k_method2)
-    res, errs, summary = print_errs(l_method1, l_method2)
-    # res, errs, summary = print_errs(a_method1, a_method2)
+        a_method1 = get_acmp2
+        a_method2 = {"name": "ac", "aci": e_interp, "df_codes": df_codes, "silim": silim}
+        res, errs, summary = print_errs(a_method1, a_method2)
 
     print(errs[2])
     print(res[2])

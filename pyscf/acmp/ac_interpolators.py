@@ -16,13 +16,13 @@ def _acmp_matrix_pow(mat, mypow):
     eval, evec = np.linalg.eigh(mat)
     eval = np.maximum(eval, 0)
     eval = eval**mypow
-    return (evec * eval).dot(evec.T)
+    return (evec * eval).dot(evec.T.conj())
 
 
 def _acmp_matrix_exp(mat, expnt=1.0):
     eval, evec = np.linalg.eigh(mat)
     eval = np.exp(expnt * eval)
-    return (evec * eval).dot(evec.T)
+    return (evec * eval).dot(evec.T.conj())
 
 
 def _acmp_matrix_pow(mat, mypow):
@@ -97,7 +97,7 @@ class ACMatrix:
         if isinstance(other, ACMatrix):
             tmp = other**0.5
             res = np.linalg.solve(tmp._data, self._data)
-            res = np.linalg.solve(tmp._data, res.T)
+            res = np.linalg.solve(tmp._data, res.T.conj())
             # res = np.linalg.solve(other._data, self._data)
             # res = _acmp_matrix_pow(res.dot(res.T), 0.5)
             return ACMatrix(res)
@@ -129,7 +129,7 @@ class ACMatrix:
         """
         evals, evecs = np.linalg.eigh(self._data)
         evals = func(evals)
-        return ACMatrix((evecs * evals).dot(evecs.T))
+        return ACMatrix((evecs * evals).dot(evecs.T.conj()))
 
     def __repr__(self):
         return repr(self._data).replace("array", "ACMat")
@@ -185,6 +185,15 @@ class ACW:
     @property
     def params(self):
         return [p for p in self._params]
+
+    @property
+    def analytical_result(self):
+        res = self._cache.get("__ANALYTICAL__", None)
+        if isinstance(res, ACMatrix):
+            res = np.trace(res._data)
+        elif isinstance(res, np.ndarray):
+            res = np.sum(res)
+        return res
 
     def compute_cache(self, w_list):
         _check_fmt(w_list)
@@ -246,6 +255,235 @@ class ScreenACW(ACW):
         return alpha * w0 / denom
 
 
+def _apply_func(func, mat):
+    if isinstance(mat, ACMatrix):
+        val = mat.apply(func)
+    else:
+        val = func(mat)
+    return val
+
+
+def get_damped_winf_diff(winf, exx, a):
+    ratio = winf / exx
+    func = lambda x: np.log(1 + np.exp(a * (1 - x))) / np.log(1 + np.exp(a))
+    if isinstance(winf, ACMatrix):
+        val = ratio.apply(func)
+    else:
+        val = func(ratio)
+    wdiff = winf - (exx * (1 - val))
+    return wdiff
+
+
+class SPL_ACW(ACW):
+    def __init__(self, params=None):
+        super().__init__(params=params)
+
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0 = w_list[:2]
+        winf = w_list[-1]
+        winf_eff = get_damped_winf_diff(winf, w0, 5)
+        self._cache["terms"] = (winf_eff, winf_eff, 2 * w0p / winf_eff, 0)
+        func = lambda x: 1 - (np.sqrt(1 + 2 * (x + 1e-10)) - 1) / (x + 1e-10)
+        res = _apply_func(func, w0p / winf_eff)
+        analytical = winf_eff * res
+        self._cache["__ANALYTICAL__"] = analytical
+
+    def __call__(self, alpha):
+        w, x, y, z = self._cache["terms"]
+        return w - x / ((1 + y * alpha)**0.5)
+
+
+def corr_eigvals_(acm):
+    mat = acm._data
+    eval, evec = np.linalg.eigh(mat)
+    eval = np.abs(eval)
+    acm._data = (evec * eval).dot(evec.T.conj())
+
+
+def corr_eigvals2_(acm, tol=1e-16):
+    mat = acm._data
+    eval, evec = np.linalg.eigh(mat)
+    eval = np.maximum(eval, tol)
+    acm._data = (evec * eval).dot(evec.T.conj())
+
+
+class ISI_ACW(SPL_ACW):
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0, winfp = w_list[:3]
+        winf = w_list[-1]
+        if isinstance(w0p, np.ndarray):
+            assert (w0p > 0).all()
+            assert (winf > 0).all()
+            assert (w0 > 0).all()
+            assert (winfp > 0).all()
+        else:
+            assert not np.isnan(w0p._data).any()
+            assert not np.isnan(winf._data).any()
+            assert not np.isnan(w0._data).any()
+            assert not np.isnan(winfp._data).any()
+            for acm in [w0p, winf, w0, winfp]:
+                corr_eigvals_(acm)
+            #assert (np.linalg.eigvalsh(w0p._data) >= 0).all()
+            #assert (np.linalg.eigvalsh(winf._data) >= 0).all()
+            #assert (np.linalg.eigvalsh(w0._data) >= 0).all()
+            #assert (np.linalg.eigvalsh(winfp._data) >= 0).all()
+        winf_eff = get_damped_winf_diff(winf, w0, 5)
+        winf_eff = winf_eff
+        x = 2 * w0p
+        y = winfp
+        z = winf_eff
+        tmp1 = (y**2)
+        tmp3 = x**2 * tmp1
+        tmp2 = z**2
+        tmp1 = x * tmp1
+        xp = tmp1 / tmp2
+        yp = tmp3 / (tmp2**2)
+        zp = 1 - xp / z
+        corr_eigvals_(zp)
+        self._cache["terms"] = (winf_eff, xp, yp, zp)
+
+
+class PURE_ISI_ACW(SPL_ACW):
+    # numerical issues, should only be used with mode="E"
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0, winfp = w_list[:3]
+        winf = w_list[-1]
+        if isinstance(w0p, np.ndarray):
+            pass
+        else:
+            raise NotImplementedError
+        winf_eff = winf - w0
+        x = 2 * w0p
+        y = winfp
+        z = winf_eff
+        tmp1 = (y**2)
+        tmp3 = x**2 * tmp1
+        tmp2 = z**2
+        tmp1 = x * tmp1
+        xp = tmp1 / tmp2
+        yp = tmp3 / (tmp2**2)
+        zp = 1 - xp / z
+        self._cache["terms"] = (winf_eff, xp, yp, zp)
+
+
+class MOD_ISI_ACW(SPL_ACW):
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0, winfp = w_list[:3]
+        winf = w_list[-1]
+        if isinstance(w0p, np.ndarray):
+            assert (w0p >= 0).all()
+            assert (winf >= 0).all()
+            assert (w0 >= 0).all()
+            assert (winfp >= 0).all()
+        else:
+            assert not np.isnan(w0p._data).any()
+            assert not np.isnan(winf._data).any()
+            assert not np.isnan(w0._data).any()
+            assert not np.isnan(winfp._data).any()
+            for acm in [w0p, winf, w0, winfp]:
+                corr_eigvals_(acm)
+        winf_eff = get_damped_winf_diff(winf, w0, 8)
+        #self._cache["terms"] = (w0p, w0p / winfp, w0p / winf_eff)
+        self._cache["terms"] = (w0p, w0p * winfp / winf_eff**2, w0p / winf_eff)
+        x, y, z = self._cache["terms"]
+        #for arr in [x, y, z, winf_eff, winf, w0]:
+        #    print("EVALS", np.linalg.eigvals(arr._data))
+
+    def __call__(self, alpha):
+        x, y, z = self._cache["terms"]
+        return alpha * x / (1 + alpha**0.5 * y + alpha * z)
+
+
+class NLANE_ACW(ACW):
+    def compute_cache(self, w_list):
+        self.clear_cache()
+        w0p, w0, w1 = w_list
+        w1 = w1 * -1
+        def func_getter(lam):
+            def func(alpha):
+                sgn = np.sign(alpha)
+                alpha = np.abs(alpha)
+                # avoid nan
+                alpha[sgn == 0] = 1e-12
+                if np.isnan(alpha).any():
+                    print("alpha is nan")
+                    raise ValueError
+                # https://github.com/dkhan42/nLanE-DH/blob/main/nLanE.py
+                c = np.sqrt(9*alpha**2 - 16*np.sqrt(2)*alpha + 12*alpha +4) - alpha + 2
+                c = c/(4*alpha)
+                if np.isnan(c).any():
+                    print("c is nan")
+                    raise ValueError
+                num = (1 - np.sqrt(lam+1)/(c*lam + 1))
+                res = num / (c - 0.5) / alpha
+                if np.isnan(res).any():
+                    print("res is nan")
+                    raise ValueError
+                return res  # sgn * res
+            return func
+        if isinstance(w0p, ACMatrix):
+            corr_eigvals2_(w0p, tol=1e-8)
+            corr_eigvals_(w1)
+            corr_eigvals_(w0)
+        else:
+            raise NotImplementedError
+        weff = w1 - w0
+        print("weff", np.linalg.eigvalsh(weff._data))
+        corr_eigvals_(weff)
+        corr_eigvals2_(weff, tol=1e-12)
+        alpha = weff / w0p
+        corr_eigvals_(alpha)
+        corr_eigvals2_(alpha, tol=1e-12)
+        self._cache["weff"] = weff
+        self._cache["alpha"] = alpha
+        self._cache["getter"] = func_getter
+
+    def __call__(self, alpha):
+        func = self._cache["getter"](alpha)
+        return self._cache["weff"] * self._cache["alpha"].apply(func)
+
+
+class MOD_NLANE_ACW(ACW):
+    def compute_cache(self, w_list):
+        self.clear_cache()
+        w0p, w0, w1 = w_list
+        w1 = w1 * -1
+        def func_getter(lam):
+            def func(alpha):
+                c = 0.5 + 1 / alpha
+                sgn = np.sign(alpha)
+                alpha = np.abs(alpha)
+                alpha[sgn == 0] = 1e-12
+                return (1 - np.sqrt(lam+1)/(c*lam + 1))
+            return func
+        if isinstance(w0p, ACMatrix):
+            corr_eigvals2_(w0p, tol=1e-8)
+            corr_eigvals_(w1)
+            corr_eigvals_(w0)
+        else:
+            raise NotImplementedError
+        weff = w1 - w0
+        print("weff", np.linalg.eigvalsh(weff._data))
+        corr_eigvals_(weff)
+        corr_eigvals2_(weff, tol=1e-12)
+        alpha = weff / w0p
+        self._cache["weff"] = weff
+        self._cache["alpha"] = alpha
+        self._cache["getter"] = func_getter
+
+    def __call__(self, alpha):
+        func = self._cache["getter"](alpha)
+        return self._cache["weff"] * self._cache["alpha"].apply(func)
+
+
 class ACInterpolator:
     def __init__(self, nalpha=None, mode=None, acw=None):
         if nalpha is None:
@@ -279,6 +517,8 @@ class ACInterpolator:
         else:
             w_list = [ACMatrix(w) for w in w_list]
         self._acw.compute_cache(w_list)
+        if self._acw.analytical_result is not None:
+            return -1 * self._acw.analytical_result
         if self.mode == "E":
             return -(self.dalpha * self._acw(self.alphas[:, None])).sum()
         else:

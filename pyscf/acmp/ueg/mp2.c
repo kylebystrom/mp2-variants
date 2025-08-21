@@ -358,18 +358,6 @@ void setup_mp2_maxs(const int nocc, int *occ_gvecs,
     maxx += tmpx;
     maxy += tmpy;
     maxz += tmpz;
-    int refsize = (maxx + 1) * (maxy + 1) * (maxz + 1);
-    int *ref_xyz = malloc(refsize * sizeof(int));
-#pragma omp parallel for
-    for (int i = 0; i < refsize; i++) {
-        ref_xyz[i] = -1; // nvir;
-    }
-    for (int v = 0; v < nvir; v++) {
-        int indx = abs(vir_gvecs[3 * v + 0]);
-        int indy = abs(vir_gvecs[3 * v + 1]);
-        int indz = abs(vir_gvecs[3 * v + 2]);
-        ref_xyz[indx * (maxy + 1) * (maxz + 1) + indy * (maxz + 1) + indz] = v;
-    }
     dat[0] = maxx;
     dat[1] = maxy;
     dat[2] = maxz;
@@ -385,6 +373,7 @@ void setup_mp2_refs(int maxx, int maxy, int maxz, const int nvir,
     for (int i = 0; i < refsize; i++) {
         ref_xyz[i] = -1; // nvir;
     }
+#pragma omp parallel for
     for (int v = 0; v < nvir; v++) {
         int indx = abs(vir_gvecs[3 * v + 0]);
         int indy = abs(vir_gvecs[3 * v + 1]);
@@ -532,7 +521,11 @@ void ecorr_mp2_vec(const int nocc, int *occ_gvecs,
                 }
             }
         }
+        // shouldn't need the critical but debugging OMP
+#pragma omp critical
+{
         res[i] = exi - 2 * edi;
+}
     }
 }
     free(ref_xyz);

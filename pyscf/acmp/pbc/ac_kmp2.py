@@ -199,9 +199,11 @@ def _acmp_ao2mo_kpt(mp, mat_k_xx, mo_coeff):
 
 
 def _get_acmp_df_mat(mp, df_code, mo_coeff):
+    print("HI", len(mo_coeff))
     if df_code == "HF":
         vmat = -0.25 * mp._scf.get_k()
     else:
+        print("NOT K")
         ni = mp._numint
         grids = mp.grids
         maxmem = mp._scf.mol.max_memory
@@ -219,6 +221,7 @@ def _get_acmp_df_mat(mp, df_code, mo_coeff):
                                         kpts=kpts, kpts_band=kpts_band,
                                         hermi=1, max_memory=maxmem,
                                         verbose=None)
+    print(len(vmat))
     return _acmp_ao2mo_kpt(mp, vmat, mo_coeff)
 
 
@@ -233,11 +236,30 @@ class ACKMP2(kmp2.KMP2):
         self.df_codes = []
         self.acmp_wlist = None
 
-    _get_acmp_df_mat = _get_acmp_df_mat
+    # _get_acmp_df_mat = _get_acmp_df_mat
+
+    get_acmp_df_mat = _get_acmp_df_mat
+
+    # get_acmp_df_wlist = get_acmp_df_wlist
 
     def get_acmp_df_wlist(self, mo_coeff):
-        wlist_vk = ac_mp2.get_acmp_df_wlist(self, mo_coeff)
         nkpts = len(mo_coeff)
+        wlist_vk = []
+        df_codes = ["HF"] + self.df_codes + [self.si_limit]
+        for df_code in df_codes:
+            wlist_vk.append(self.get_acmp_df_mat(df_code, mo_coeff))
+        if isinstance(wlist_vk[0], tuple):
+            # spinpol
+            for w in [wlist_vk[0], wlist_vk[-1]]:
+                for k in range(nkpts):
+                    w[0][k][:] *= -1
+                    w[1][k][:] *= -1
+        else:
+            for k in range(nkpts):
+                # non-spinpol
+                wlist_vk[0][k][:] *= -1
+                wlist_vk[-1][k][:] *= -1
+        print(len(wlist_vk), [len(wlist_k) for wlist_k in wlist_vk])
         wlist_kv = []
         for k in range(nkpts):
             wlist_kv.append([wlist_k[k] for wlist_k in wlist_vk])
@@ -246,7 +268,7 @@ class ACKMP2(kmp2.KMP2):
     add_to_w_list_ = add_to_w_list_
 
     def get_pt_list_size(self):
-        return 2
+        return 1
     
     def get_df_list_size(self):
         return 1
