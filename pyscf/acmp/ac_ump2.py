@@ -51,13 +51,10 @@ def get_acmp_df_mat(mp, df_code, mo_coeff):
                                          verbose=None)
         # vmat does not have spin because strong correlation limit
         # is spin-independent
-        print(vmat.shape)
         vmat = numpy.stack([vmat, vmat], axis=0)
-        print(vmat.shape)
     nocca, noccb = mp.get_nocc()
     occ_coeffa = mo_coeff[0][:, :nocca]
     occ_coeffb = mo_coeff[1][:, :noccb]
-    print(occ_coeffa.shape, vmat[0].shape, occ_coeffb.shape, vmat[1].shape)
     return (
         _acmp_ao2mo(vmat[0], occ_coeffa),
         _acmp_ao2mo(vmat[1], occ_coeffb),
@@ -160,8 +157,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
 
     # TODO don't assign misleading values to ss and os
     emp2 = lib.tag_array(energy, e_corr_ss=0, e_corr_os=energy)
-
-    print("REAL?", emp2.real)
     return emp2.real, t2
 
 

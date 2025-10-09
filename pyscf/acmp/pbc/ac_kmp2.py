@@ -91,7 +91,6 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     # Build 3-index DF tensor Lov
     if with_df_ints:
         Lov = kmp2._init_mp_df_eris(mp)
-        # print(Lov.shape)
 
     wlist_df_kpt = mp.get_acmp_df_wlist(mo_coeff)
 
@@ -99,11 +98,8 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     emp2 = 0
     nocc_list = mp.get_nocc(per_kpoint=True)
     scaled_kpts = mp._scf.cell.get_scaled_kpts(mp._scf.kpts)
-    print("KPTS", scaled_kpts)
     wlists_k = []
     for ki in range(nkpts):
-        # print("KINDEX", ki, mp._scf.kpts[ki], len(winf_k_xx))
-        # winf_xx = -winf_k_xx[ki]
         # TODO lib.dot if possible
         my_nocc = nocc_list[ki]
         w_list = [np.zeros((nocc, nocc), dtype=np.complex128)
@@ -166,15 +162,9 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
                 # w_list[0][:] += lib.einsum("ix,jx->ij", g.conj(), t2.conj())
                 emp2 += lib.einsum("ix,ix->", t2, g)
         w_list = [w[:my_nocc, :my_nocc] for w in w_list]
-        print("EIGVALS", ki, [np.linalg.eigvals(w) for w in w_list])
-        print("DIAG", ki, [np.diag(w) for w in w_list])
         w_list = concatenate_w(w_list, wlist_df_kpt[ki])
-        print("EIGVALS2", ki, [np.linalg.eigvals(w) for w in w_list])
         energy += 2 * mp.ac_interpolator(w_list)
         wlists_k.append(w_list)
-        print(energy, emp2)
-        print()
-        # energy += mp.ac_interpolator(w0, winf)
 
     log.timer("KMP2", *cput0)
 
@@ -199,11 +189,9 @@ def _acmp_ao2mo_kpt(mp, mat_k_xx, mo_coeff):
 
 
 def _get_acmp_df_mat(mp, df_code, mo_coeff):
-    print("HI", len(mo_coeff))
     if df_code == "HF":
         vmat = -0.25 * mp._scf.get_k()
     else:
-        print("NOT K")
         ni = mp._numint
         grids = mp.grids
         maxmem = mp._scf.mol.max_memory
@@ -221,7 +209,6 @@ def _get_acmp_df_mat(mp, df_code, mo_coeff):
                                         kpts=kpts, kpts_band=kpts_band,
                                         hermi=1, max_memory=maxmem,
                                         verbose=None)
-    print(len(vmat))
     return _acmp_ao2mo_kpt(mp, vmat, mo_coeff)
 
 
@@ -259,7 +246,6 @@ class ACKMP2(kmp2.KMP2):
                 # non-spinpol
                 wlist_vk[0][k][:] *= -1
                 wlist_vk[-1][k][:] *= -1
-        print(len(wlist_vk), [len(wlist_k) for wlist_k in wlist_vk])
         wlist_kv = []
         for k in range(nkpts):
             wlist_kv.append([wlist_k[k] for wlist_k in wlist_vk])

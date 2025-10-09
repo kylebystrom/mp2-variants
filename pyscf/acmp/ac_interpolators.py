@@ -292,7 +292,7 @@ class SPL_ACW(ACW):
 
     def __call__(self, alpha):
         w, x, y, z = self._cache["terms"]
-        return w - x / ((1 + y * alpha)**0.5)
+        return w - x / ((1 + y * alpha)**0.5 + z)
 
 
 def corr_eigvals_(acm):
@@ -316,10 +316,10 @@ class ISI_ACW(SPL_ACW):
         w0p, w0, winfp = w_list[:3]
         winf = w_list[-1]
         if isinstance(w0p, np.ndarray):
-            assert (w0p > 0).all()
-            assert (winf > 0).all()
-            assert (w0 > 0).all()
-            assert (winfp > 0).all()
+            assert (w0p >= 0).all()
+            assert (winf >= 0).all()
+            assert (w0 >= 0).all()
+            assert (winfp >= 0).all()
         else:
             assert not np.isnan(w0p._data).any()
             assert not np.isnan(winf._data).any()
@@ -327,12 +327,7 @@ class ISI_ACW(SPL_ACW):
             assert not np.isnan(winfp._data).any()
             for acm in [w0p, winf, w0, winfp]:
                 corr_eigvals_(acm)
-            #assert (np.linalg.eigvalsh(w0p._data) >= 0).all()
-            #assert (np.linalg.eigvalsh(winf._data) >= 0).all()
-            #assert (np.linalg.eigvalsh(w0._data) >= 0).all()
-            #assert (np.linalg.eigvalsh(winfp._data) >= 0).all()
         winf_eff = get_damped_winf_diff(winf, w0, 5)
-        winf_eff = winf_eff
         x = 2 * w0p
         y = winfp
         z = winf_eff
@@ -342,8 +337,8 @@ class ISI_ACW(SPL_ACW):
         tmp1 = x * tmp1
         xp = tmp1 / tmp2
         yp = tmp3 / (tmp2**2)
-        zp = 1 - xp / z
-        corr_eigvals_(zp)
+        zp = xp / z - 1
+        # corr_eigvals_(zp)
         self._cache["terms"] = (winf_eff, xp, yp, zp)
 
 
@@ -368,7 +363,7 @@ class PURE_ISI_ACW(SPL_ACW):
         tmp1 = x * tmp1
         xp = tmp1 / tmp2
         yp = tmp3 / (tmp2**2)
-        zp = 1 - xp / z
+        zp = xp / z - 1
         self._cache["terms"] = (winf_eff, xp, yp, zp)
 
 
@@ -377,6 +372,59 @@ class MOD_ISI_ACW(SPL_ACW):
         # note w0 is exx, w0p is 2*EMP2
         self.clear_cache()
         w0p, w0, winfp = w_list[:3]
+        winf = w_list[-1]
+        if isinstance(w0p, np.ndarray):
+            assert (w0p >= -1e-14).all()
+            assert (winf >= -1e-14).all()
+            assert (w0 >= -1e-14).all()
+            assert (winfp >= -1e-14).all()
+        else:
+            assert not np.isnan(w0p._data).any()
+            assert not np.isnan(winf._data).any()
+            assert not np.isnan(w0._data).any()
+            assert not np.isnan(winfp._data).any()
+            for acm in [w0p, winf, w0, winfp]:
+                corr_eigvals_(acm)
+        winf_eff = get_damped_winf_diff(winf, w0, 8)
+        self._cache["terms"] = (w0p, w0p * winfp / winf_eff**2, w0p / winf_eff)
+
+    def __call__(self, alpha):
+        x, y, z = self._cache["terms"]
+        return alpha * x / (1 + alpha**0.5 * y + alpha * z)
+
+
+class PURE_MOD_ISI_ACW(SPL_ACW):
+    # numerical issues, should only be used with mode="E"
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0, winfp = w_list[:3]
+        winf = w_list[-1]
+        if isinstance(w0p, np.ndarray):
+            assert (w0p >= -1e-14).all()
+            assert (winf >= -1e-14).all()
+            assert (w0 >= -1e-14).all()
+            assert (winfp >= -1e-14).all()
+        else:
+            assert not np.isnan(w0p._data).any()
+            assert not np.isnan(winf._data).any()
+            assert not np.isnan(w0._data).any()
+            assert not np.isnan(winfp._data).any()
+            for acm in [w0p, winf, w0, winfp]:
+                corr_eigvals_(acm)
+        winf_eff = winf - w0
+        self._cache["terms"] = (w0p, w0p * winfp / winf_eff**2, w0p / winf_eff)
+
+    def __call__(self, alpha):
+        x, y, z = self._cache["terms"]
+        return alpha * x / (1 + alpha**0.5 * y + alpha * z)
+
+
+class ISI3_ACW(ACW):
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0, winfp, winfpp = w_list[:4]
         winf = w_list[-1]
         if isinstance(w0p, np.ndarray):
             assert (w0p >= 0).all()
@@ -391,15 +439,47 @@ class MOD_ISI_ACW(SPL_ACW):
             for acm in [w0p, winf, w0, winfp]:
                 corr_eigvals_(acm)
         winf_eff = get_damped_winf_diff(winf, w0, 8)
-        #self._cache["terms"] = (w0p, w0p / winfp, w0p / winf_eff)
-        self._cache["terms"] = (w0p, w0p * winfp / winf_eff**2, w0p / winf_eff)
-        x, y, z = self._cache["terms"]
-        #for arr in [x, y, z, winf_eff, winf, w0]:
-        #    print("EVALS", np.linalg.eigvals(arr._data))
+        z = w0p**2 / winf_eff**2
+        y = winfp / winf_eff
+        y = 2 * y * z
+        x = winfpp + 3 * winfp**2 * (winf_eff**-1 - winf**-1)
+        x = x * z / winf_eff
+        self._cache["terms"] = (w0p, x, y, z)
 
     def __call__(self, alpha):
-        x, y, z = self._cache["terms"]
-        return alpha * x / (1 + alpha**0.5 * y + alpha * z)
+        w, x, y, z = self._cache["terms"]
+        return alpha * w / (1 + alpha * x + alpha**1.5 * y + alpha**2 * z)**0.5
+
+
+class ISI30_ACW(ACW):
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0, winfp, winfpp = w_list[:4]
+        winf = w_list[-1]
+        if isinstance(w0p, np.ndarray):
+            assert (w0p >= 0).all()
+            assert (winf >= 0).all()
+            assert (w0 >= 0).all()
+            assert (winfp >= 0).all()
+        else:
+            assert not np.isnan(w0p._data).any()
+            assert not np.isnan(winf._data).any()
+            assert not np.isnan(w0._data).any()
+            assert not np.isnan(winfp._data).any()
+            for acm in [w0p, winf, w0, winfp]:
+                corr_eigvals_(acm)
+        winf_eff = get_damped_winf_diff(winf, w0, 8)
+        z = w0p**2 / winf_eff**2
+        y = winfp / winf_eff
+        y = 2 * y * z
+        x = winfpp # + 3 * (winf_eff**-1 - winf**-1) * winfp**2
+        x = x * w0p / winf_eff**3
+        self._cache["terms"] = (w0p, x, y, z)
+
+    def __call__(self, alpha):
+        w, x, y, z = self._cache["terms"]
+        return alpha * w / (1 + alpha * x + alpha**1.5 * y + alpha**2 * z)**0.5
 
 
 class NLANE_ACW(ACW):
@@ -414,18 +494,15 @@ class NLANE_ACW(ACW):
                 # avoid nan
                 alpha[sgn == 0] = 1e-12
                 if np.isnan(alpha).any():
-                    print("alpha is nan")
                     raise ValueError
                 # https://github.com/dkhan42/nLanE-DH/blob/main/nLanE.py
                 c = np.sqrt(9*alpha**2 - 16*np.sqrt(2)*alpha + 12*alpha +4) - alpha + 2
                 c = c/(4*alpha)
                 if np.isnan(c).any():
-                    print("c is nan")
                     raise ValueError
                 num = (1 - np.sqrt(lam+1)/(c*lam + 1))
                 res = num / (c - 0.5) / alpha
                 if np.isnan(res).any():
-                    print("res is nan")
                     raise ValueError
                 return res  # sgn * res
             return func
@@ -436,7 +513,6 @@ class NLANE_ACW(ACW):
         else:
             raise NotImplementedError
         weff = w1 - w0
-        print("weff", np.linalg.eigvalsh(weff._data))
         corr_eigvals_(weff)
         corr_eigvals2_(weff, tol=1e-12)
         alpha = weff / w0p
@@ -471,7 +547,6 @@ class MOD_NLANE_ACW(ACW):
         else:
             raise NotImplementedError
         weff = w1 - w0
-        print("weff", np.linalg.eigvalsh(weff._data))
         corr_eigvals_(weff)
         corr_eigvals2_(weff, tol=1e-12)
         alpha = weff / w0p

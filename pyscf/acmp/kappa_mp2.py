@@ -50,7 +50,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         t2 = None
 
     emp2_ss = emp2_os = 0
-    maxi = -1e10
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -62,7 +61,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
         # t2i = gi.conj()/lib.direct_sum('jb+a->jba', eia, eia[i])
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
-        maxi = max(numpy.max(ei), maxi)
         t2i = gi.conj()/ei * mp.get_damping_factor(ei)
         edi = numpy.einsum('jab,jab', t2i, gi) * 2
         exi = -numpy.einsum('jab,jba', t2i, gi)
@@ -70,7 +68,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         emp2_os += edi*0.5
         if with_t2:
             t2[i] = t2i
-    print("MAXI", maxi, (1 - numpy.exp(mp.kappa*maxi))**2)
 
     emp2_ss = emp2_ss.real
     emp2_os = emp2_os.real
