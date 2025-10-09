@@ -248,6 +248,8 @@ def gga_pch_winf_v2(rho):
     k = -7.11
     sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
     s2 = sigma / rho[0]**(8.0 / 3) / sfac
+    # NOTE added for numerical stability
+    s2[rho[0] <= 1e-16] = 0
     lda = A * rho[0]**(1.0 / 3)
     # return _gga_pch_term_v2(lda, s2, mu, 0.0, fl=0.35)
     return _gga_pch_term_v2(lda, s2, mu, 0.0, fl=0.5)
@@ -290,6 +292,8 @@ def gga_pch_winfp_v2(rho):
     #mu = -0.02558 * sfac / C
     sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
     s2 = sigma / rho[0]**(8.0 / 3) / sfac
+    # NOTE added for numerical stability
+    s2[rho[0] <= 1e-16] = 0
     lda = C * rho[0]**0.5
     # return numpy.ones_like(lda) * 1e-6
     return _gga_pch_term_v2(lda, s2, mu, 0.0, fl=0.0)
@@ -389,6 +393,79 @@ def mgga_r2scan_strong_corr(rho, small_rho=1e-8):
     rho[4] /= gamma**5
     exc = eval_xc("MGGA_X_R2SCAN,MGGA_C_R2SCAN", rho, deriv=0)[0]
     return exc * gamma
+
+
+def _mgga_r2scan_scaled(rho, gamma):
+    rho = rho.copy()
+    # density is small_rho now
+    rho[0] /= gamma**3
+    rho[1:4] /= gamma**4
+    rho[4] /= gamma**5
+    exc = eval_xc("MGGA_X_R2SCAN,MGGA_C_R2SCAN", rho, deriv=0)[0]
+    return exc
+
+
+def mgga_r2scan_winf_expansion(rho, small_rho=1e-8):
+    # scale the density down really small
+    delta = 1e-4
+    gamma = (rho[0] / small_rho)**(1.0 / 3)
+    exc0 = _mgga_r2scan_scaled(rho, gamma)
+    excm = _mgga_r2scan_scaled(rho, gamma - delta * gamma)
+    excp = _mgga_r2scan_scaled(rho, gamma + delta * gamma)
+    d1 = (excp - excm) / (2 * delta * gamma)
+    d2 = (excp + excm - 2 * exc0) / (delta * gamma)**2
+    dres = 2 * exc0 + 4 * gamma * d1 + gamma**2 * d2
+    dres *= -2 * gamma**1.5
+    # res = -dres / gamma**0.5 + 2 * gamma * exc0 + gamma**2 * d1
+    res = -dres / gamma**0.5 + 2 * gamma * exc0 + gamma**2 * d1
+    # res = exc0 * gamma
+    # dres = gamma**0.5 * (2 * gamma * exc0 + gamma**2 * d1 - res)
+    return res, dres
+
+
+def mgga_r2scan_winf(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_expansion(rho, small_rho)[0]
+
+
+def mgga_r2scan_winfp(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_expansion(rho, small_rho)[1]
+
+
+def mgga_r2scan_walpha(rho, gamma):
+    delta = 1e-4
+    exc0 = _mgga_r2scan_scaled(rho, gamma)
+    excm = _mgga_r2scan_scaled(rho, gamma - delta * gamma)
+    excp = _mgga_r2scan_scaled(rho, gamma + delta * gamma)
+    dexc0 = (excp - excm) / (2 * delta)
+    return 2 * gamma * exc0 + gamma * dexc0
+
+
+def mgga_r2scan_winf_exp2(rho, small_rho=1e-9):
+    gamma_facs = [0.9, 1.0, 1.1]
+    gamma0 = (rho[0] / small_rho)**(1.0 / 3)
+    gammas = [gamma0 * gf for gf in gamma_facs]
+    was = [mgga_r2scan_walpha(rho, gamma) for gamma in gammas]
+    gamma_facs = numpy.array(gamma_facs)
+    x = numpy.array([numpy.ones_like(gamma_facs), 1.0 / gamma_facs**0.5, 1.0 / gamma_facs]).T
+    y = numpy.linalg.solve(x, was)
+    return y[0], gamma0**0.5 * y[1], gamma0 * y[2]
+
+
+def mgga_r2scan_v2_winf(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_exp2(rho, small_rho)[0]
+
+
+def mgga_r2scan_v2_winfp(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_exp2(rho, small_rho)[1]
+
+
+def mgga_r2scan_v2_winfpp(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_exp2(rho, small_rho)[2]
+
+
+def mgga_r2scan_v2_winfpp_denom(rho, small_rho=1e-9):
+    res = mgga_r2scan_winf_exp2(rho, small_rho)
+    return 2 * res[2] - 3 * res[1]**2 / res[0]
 
 
 def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
