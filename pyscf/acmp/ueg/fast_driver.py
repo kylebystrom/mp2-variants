@@ -189,7 +189,6 @@ def run_ueg_calc(**settings):
     elif STYLE == "ac":
         res_shape = (len(eig_o),)
     res = numpy.empty(res_shape, dtype=numpy.float64)
-    print(res.size)
     args = [
         ctypes.c_int(eig_o.size),
         g_o.ctypes.data_as(ctypes.c_void_p),

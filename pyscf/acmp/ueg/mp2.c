@@ -121,7 +121,6 @@ void get_coulomb_ov(double *coulomb_ov, int *occ_gvecs, int *vir_gvecs,
     double gfac = 2 * PI / length;
     double vfac = 4 * PI / volume;
     double R = 0.5 * length;
-    double efac = -0.5 * R * R;
 #pragma omp parallel for
     for (int o = 0; o < nocc; o++) {
         double G;
@@ -135,7 +134,6 @@ void get_coulomb_ov(double *coulomb_ov, int *occ_gvecs, int *vir_gvecs,
             diff = vir_gvecs[3 * v + 2] - occ_gvecs[3 * o + 2];
             G += diff * diff;
             G = gfac * gfac * G;
-            // coulomb_ov[o * nvir + v] = vfac / G * (1 - exp(efac * G));
             G = sqrt(G) + 1e-8;
             coulomb_ov[o * nvir + v] = vfac * ((1 - cos(G * R)) / (G * G));
         }
