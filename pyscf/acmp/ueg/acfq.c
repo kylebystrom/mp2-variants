@@ -196,7 +196,7 @@ void get_kappa_contribs(double *kfactors0, double *kfactors1,
                 k[1] = radc[i0] * cost;
                 ind = i0 * nsph + a0;
                 kfactors0[ind] = exp(-kappa * (0.5 * q * q + k[1] * q));
-                if (kfactors1[ind] > 1) {
+                if (kfactors0[ind] > 1) {
                     printf("ERROR\n");
                     exit(-1);
                 }

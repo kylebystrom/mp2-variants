@@ -24,7 +24,6 @@ def get_occ_grid(nl):
         xl = 0.5 + np.arange(nl)
         xl /= nl
         alpha = 10
-        # alpha = 6
         rl = (1 - np.exp(-alpha * xl)) / (1 - np.exp(-alpha))
         drl = alpha * np.exp(-alpha * xl) / (1 - np.exp(-alpha)) / nl
     return rl, 4 * np.pi * rl * rl * drl
@@ -143,7 +142,7 @@ def main():
     et = ex - ed
     
     resdir = "res_{}_{:.3f}_{:.7f}.yaml".format(version, WS_RADIUS, PARAM)
-    os.makedirs("results2", exist_ok=True)
+    os.makedirs("results", exist_ok=True)
 
     # adjust dvl so that it integrates to 1/2
     dvl[:] *= 3 / (8 * np.pi)
@@ -160,9 +159,7 @@ def main():
         num = 1
     else:
         num = 2
-    # np.save(f"g{num}d.npy", fds)
-    # np.save(f"g{num}x.npy", fxs)
-    with open("results2/{}".format(resdir), "w") as f:
+    with open("results/{}".format(resdir), "w") as f:
         yaml.dump(
             {
                 "settings": settings,

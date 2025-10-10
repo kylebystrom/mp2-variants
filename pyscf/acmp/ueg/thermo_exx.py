@@ -56,12 +56,6 @@ def main():
     print("SETTINGS")
     print(yaml.dump(settings))
 
-    version = settings["style"] + "mp2"
-    if settings["h0"] == "fock":
-        version = version + "hf"
-    elif settings["h0"] != "kinetic":
-        raise ValueError("h0 must be 'fock' or 'kinetic'")
-
     ED_CONSTANT = 1.5 / (8 * np.pi**5)
 
     lpath = os.path.dirname(__file__)
@@ -69,7 +63,6 @@ def main():
 
     WS_RADIUS = settings["ws_radius"]
     KFERMI = (9 * np.pi / 4)**(1.0 / 3) / WS_RADIUS
-    PARAM = settings["param"]
     nsph = settings["nsph"]
 
     rl, dvl = get_occ_grid(settings["nl"])
@@ -95,7 +88,8 @@ def main():
     exxlist[:] *= -2
     exx = exxlist.dot(dvl)
     print(exx, KEX, dvl.sum())
-    with open(f"results2/exx_{WS_RADIUS:.4f}.yaml", "w") as f:
+    os.makedirs("results", exist_ok=True)
+    with open(f"results/exx_{WS_RADIUS:.4f}.yaml", "w") as f:
         yaml.dump(
             {
                 "settings": settings,

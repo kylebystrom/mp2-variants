@@ -233,7 +233,7 @@ def post_process(method, ueg_result):
     elif method["name"] == "ac":
         aci = method["aci"]
         df_codes = method["df_codes"] + [method["silim"]]
-        w_list = [ueg_result[-1], ueg_result[1]]
+        w_list = [ueg_result[-1].copy(), ueg_result[1].copy()]
         rhovec = ueg.mgga_rho_vector(ueg_result[2])
         for dtype, dffunc in df_codes:
             if dtype == "LDA":
