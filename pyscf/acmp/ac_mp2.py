@@ -129,16 +129,16 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
         mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED)
-    
+
     return w_list, t2
 
 
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
     if eris is None:
         eris = mp.ao2mo(mo_coeff)
+    w_list, t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
     if mo_coeff is None:
         mo_coeff = eris.mo_coeff
-    w_list, t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
 
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)
     w_list = concatenate_w(w_list, wlist_df)

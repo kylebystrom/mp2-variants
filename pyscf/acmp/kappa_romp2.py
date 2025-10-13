@@ -11,46 +11,34 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         # not supported when mo_energy or mo_coeff is given.
         assert (mp.frozen == 0 or mp.frozen is None)
 
-    if mo_coeff is None: mo_coeff = mp.mo_coeff
     with_t2 = False  # TODO allow t2
-    mo_energy, dfock, transforms = mp._get_coefs()
-
-    nocca, noccb = mp.nocc  # TODO get_nocc()
-    nmoa, nmob = mo_coeff.shape[-1], mo_coeff.shape[-1]
-    nvira, nvirb = nmoa-nocca, nmob-noccb
-
-    assert mo_coeff is not None  # TODO allow mo_coeff to be None
-    mc_a = numpy.append(
-        mo_coeff[:, :nocca].dot(transforms[0]),
-        mo_coeff[:, nocca:].dot(transforms[2]),
-        axis=1,
-    )
-    mc_b = numpy.append(
-        mo_coeff[:, :noccb].dot(transforms[1]),
-        mo_coeff[:, noccb:].dot(transforms[3]),
-        axis=1,
-    )
-    mo_coeff = numpy.stack([mc_a, mc_b])
+    mo_energy, dfock, transforms, mo_coeff = mp._get_coefs()
+    mo_energy = None
+    mo_coeff = None
     
-
     if eris is None:
-        mp.mo_occ = mp._split_mo_occ
-        mp._scf.mo_coeff = mo_coeff
-        mp._scf.mo_energy = mo_energy
         eris = mp.ao2mo(mo_coeff)
 
-    if mo_energy is None:
-        mo_energy = eris.mo_energy
+    mo_energy = eris.mo_energy
+    mo_coeff = eris.mo_coeff
+    nocca, noccb = mp.get_nocc()
+    nmoa, nmob = mo_coeff[0].shape[-1], mo_coeff[1].shape[-1]
+    nvira, nvirb = nmoa-nocca, nmob-noccb
 
     mo_ea, mo_eb = mo_energy
     eia_a = mo_ea[:nocca,None] - mo_ea[None,nocca:]
     eia_b = mo_eb[:noccb,None] - mo_eb[None,noccb:]
     
-    e_singles = 0
-    fac_a = mp.get_damping_factor(2 * eia_a) / eia_a
-    fac_b = mp.get_damping_factor(2 * eia_b) / eia_b
-    e_singles = numpy.einsum("ia,ia->", dfock[0], dfock[0].conj() * fac_a)
-    e_singles += numpy.einsum("ia,ia->", dfock[1], dfock[1].conj() * fac_b)
+    e_singles = numpy.einsum("ia,ia->", dfock[0], dfock[0].conj() / eia_a)
+    e_singles += numpy.einsum("ia,ia->", dfock[1], dfock[1].conj() / eia_b)
+
+    # TODO add option to regularize the singles
+    #fac_a = mp.get_damping_factor(2 * eia_a) / eia_a
+    #fac_b = mp.get_damping_factor(2 * eia_b) / eia_b
+    #e_singles = numpy.einsum("ia,ia->", dfock[0], dfock[0].conj() * fac_a)
+    #e_singles += numpy.einsum("ia,ia->", dfock[1], dfock[1].conj() * fac_b)
+    e_singles = numpy.einsum("ia,ia->", dfock[0], dfock[0].conj() / eia_a)
+    e_singles += numpy.einsum("ia,ia->", dfock[1], dfock[1].conj() / eia_b)
 
     if with_t2:
         dtype = eris.ovov.dtype

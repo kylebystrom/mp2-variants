@@ -39,36 +39,19 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         # not supported when mo_energy or mo_coeff is given.
         assert (mp.frozen == 0 or mp.frozen is None)
 
-    if mo_coeff is None: mo_coeff = mp.mo_coeff
     with_t2 = False  # TODO allow t2
-    mo_energy, dfock, transforms = mp._get_coefs()
-
-    nocca, noccb = mp.nocc  # TODO get_nocc()
-    nmoa, nmob = mo_coeff.shape[-1], mo_coeff.shape[-1]
-    nvira, nvirb = nmoa-nocca, nmob-noccb
-
-    assert mo_coeff is not None  # TODO allow mo_coeff to be None
-    mc_a = numpy.append(
-        mo_coeff[:, :nocca].dot(transforms[0]),
-        mo_coeff[:, nocca:].dot(transforms[2]),
-        axis=1,
-    )
-    mc_b = numpy.append(
-        mo_coeff[:, :noccb].dot(transforms[1]),
-        mo_coeff[:, noccb:].dot(transforms[3]),
-        axis=1,
-    )
-    mo_coeff = numpy.stack([mc_a, mc_b])
+    mo_energy, dfock, transforms, mo_coeff = mp._get_coefs()
+    mo_energy = None
+    mo_coeff = None
     
-
     if eris is None:
-        mp.mo_occ = mp._split_mo_occ
-        mp._scf.mo_coeff = mo_coeff
-        mp._scf.mo_energy = mo_energy
         eris = mp.ao2mo(mo_coeff)
 
-    if mo_energy is None:
-        mo_energy = eris.mo_energy
+    mo_energy = eris.mo_energy
+    mo_coeff = eris.mo_coeff
+    nocca, noccb = mp.get_nocc()
+    nmoa, nmob = mo_coeff[0].shape[-1], mo_coeff[1].shape[-1]
+    nvira, nvirb = nmoa-nocca, nmob-noccb
 
     mo_ea, mo_eb = mo_energy
     eia_a = mo_ea[:nocca,None] - mo_ea[None,nocca:]
@@ -150,44 +133,86 @@ class ROMP2(ump2.UMP2):
 
     get_frozen_mask = ump2.get_frozen_mask
 
+    get_nocc = ump2.get_nocc
+
     @property
     def nocc(self):
-        return self.mol.nelec
+        if self._nocc is None:
+            return self.mol.nelec
+        else:
+            return self._nocc
     @nocc.setter
     def nocc(self, n):
-        raise NotImplementedError
+        self._nocc = n
 
     def _get_coefs(self):
-        nmo = self.mo_coeff.shape[-1]
-        umf = self._scf = self._scf.to_uhf()
-        nocc_a = umf.nelec[0]
-        nocc_b = umf.nelec[1]
-        occ_a = numpy.zeros(nmo)
-        occ_a[:nocc_a] = 1
-        occ_b = numpy.zeros(nmo)
-        occ_b[:nocc_b] = 1
+        romf = self._scf
+        umf = romf.to_uhf()
+        umf.converged = romf.converged
+        self._scf = umf
+        self.mo_occ = umf.mo_occ
+        moidx = self.get_frozen_mask()
+        romo_coeff_a = romf.mo_coeff
+        romo_coeff_b = romf.mo_coeff
+        occ_a = umf.mo_occ[0]
+        occ_b = umf.mo_occ[1]
+        assert numpy.logical_or(occ_a == 0, occ_a == 1).all()
+        assert numpy.logical_or(occ_b == 0, occ_b == 1).all()
+        occ_a = occ_a > 0
+        vir_a = numpy.logical_not(occ_a)
+        occ_b = occ_b > 0
+        vir_b = numpy.logical_not(occ_b)
         dm1 = umf.make_rdm1(
-            mo_coeff=numpy.stack([self.mo_coeff, self.mo_coeff]),
+            mo_coeff=numpy.stack([romo_coeff_a, romo_coeff_b]),
             mo_occ=[occ_a, occ_b],
         )
         fock = umf.get_hcore(self.mol) + umf.get_veff(self.mol, dm1)
-        dfock = [_acmp_ao2mo(fock[0], self.mo_coeff),
-                 _acmp_ao2mo(fock[1], self.mo_coeff)]
-        oe_a, ot_a = scipy.linalg.eigh(dfock[0][:nocc_a, :nocc_a])
-        oe_b, ot_b = scipy.linalg.eigh(dfock[1][:nocc_b, :nocc_b])
-        ve_a, vt_a = scipy.linalg.eigh(dfock[0][nocc_a:, nocc_a:])
-        ve_b, vt_b = scipy.linalg.eigh(dfock[1][nocc_b:, nocc_b:])
-        dfock[0][:nocc_a, :nocc_a] = 0
-        dfock[0][nocc_a:, nocc_a:] = 0
-        dfock[1][:nocc_b, :nocc_b] = 0
-        dfock[1][nocc_b:, nocc_b:] = 0
+        dfock = [_acmp_ao2mo(fock[0], romo_coeff_a),
+                 _acmp_ao2mo(fock[1], romo_coeff_b)]
+        oe_a, ot_a = scipy.linalg.eigh(dfock[0][occ_a][:, occ_a])
+        oe_b, ot_b = scipy.linalg.eigh(dfock[1][occ_b][:, occ_b])
+        ve_a, vt_a = scipy.linalg.eigh(dfock[0][vir_a][:, vir_a])
+        ve_b, vt_b = scipy.linalg.eigh(dfock[1][vir_b][:, vir_b])
+        occ_act_a = numpy.logical_and(moidx[0], occ_a)
+        occ_act_b = numpy.logical_and(moidx[1], occ_b)
+        vir_act_a = numpy.logical_and(moidx[0], vir_a)
+        vir_act_b = numpy.logical_and(moidx[1], vir_b)
+        dfock = [dfock[0][occ_act_a][:, vir_act_a], dfock[1][occ_act_b][:, vir_act_b]]
         moe_a = numpy.append(oe_a, ve_a)
         moe_b = numpy.append(oe_b, ve_b)
-        self._split_mo_occ = numpy.stack([occ_a, occ_b])
+
+        mc_a = numpy.append(
+            romo_coeff_a[:, occ_a].dot(ot_a),
+            romo_coeff_a[:, vir_a].dot(vt_a),
+            axis=1,
+        )
+        mc_b = numpy.append(
+            romo_coeff_b[:, occ_b].dot(ot_b),
+            romo_coeff_b[:, vir_b].dot(vt_b),
+            axis=1,
+        )
+        mo_coeff = numpy.stack([mc_a, mc_b])
+
+        nmoa, nocca = occ_a.size, occ_a.sum()
+        nmob, noccb = occ_b.size, occ_b.sum()
+        occ_a = numpy.zeros(nmoa)
+        occ_a[:nocca] = 1.0
+        occ_b = numpy.zeros(nmob)
+        occ_b[:noccb] = 1.0
+
+        self._scf.mo_coeff[0] = mo_coeff[0]
+        self._scf.mo_coeff[1] = mo_coeff[1]
+        self._scf.mo_energy[0] = moe_a
+        self._scf.mo_energy[1] = moe_b
+        self.mo_coeff = self._scf.mo_coeff
+        self.mo_occ = self._scf.mo_occ
+        self.mo_energy = self._scf.mo_energy
+
         return (
             [moe_a, moe_b],
-            [dfock[0][:nocc_a, nocc_a:], dfock[1][:nocc_b, nocc_b:]],
+            dfock,
             [ot_a, ot_b, vt_a, vt_b],
+            self.mo_coeff,
         )
 
 
