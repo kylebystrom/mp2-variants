@@ -91,7 +91,6 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     # Build 3-index DF tensor Lov
     if with_df_ints:
         Lov = kmp2._init_mp_df_eris(mp)
-        # print(Lov.shape)
 
     wlist_df_kpt = mp.get_acmp_df_wlist(mo_coeff)
 
@@ -99,11 +98,8 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     emp2 = 0
     nocc_list = mp.get_nocc(per_kpoint=True)
     scaled_kpts = mp._scf.cell.get_scaled_kpts(mp._scf.kpts)
-    print("KPTS", scaled_kpts)
     wlists_k = []
     for ki in range(nkpts):
-        # print("KINDEX", ki, mp._scf.kpts[ki], len(winf_k_xx))
-        # winf_xx = -winf_k_xx[ki]
         # TODO lib.dot if possible
         my_nocc = nocc_list[ki]
         w_list = [np.zeros((nocc, nocc), dtype=np.complex128)
@@ -166,15 +162,9 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
                 # w_list[0][:] += lib.einsum("ix,jx->ij", g.conj(), t2.conj())
                 emp2 += lib.einsum("ix,ix->", t2, g)
         w_list = [w[:my_nocc, :my_nocc] for w in w_list]
-        print("EIGVALS", ki, [np.linalg.eigvals(w) for w in w_list])
-        print("DIAG", ki, [np.diag(w) for w in w_list])
         w_list = concatenate_w(w_list, wlist_df_kpt[ki])
-        print("EIGVALS2", ki, [np.linalg.eigvals(w) for w in w_list])
         energy += 2 * mp.ac_interpolator(w_list)
         wlists_k.append(w_list)
-        print(energy, emp2)
-        print()
-        # energy += mp.ac_interpolator(w0, winf)
 
     log.timer("KMP2", *cput0)
 
@@ -233,11 +223,29 @@ class ACKMP2(kmp2.KMP2):
         self.df_codes = []
         self.acmp_wlist = None
 
-    _get_acmp_df_mat = _get_acmp_df_mat
+    # _get_acmp_df_mat = _get_acmp_df_mat
+
+    get_acmp_df_mat = _get_acmp_df_mat
+
+    # get_acmp_df_wlist = get_acmp_df_wlist
 
     def get_acmp_df_wlist(self, mo_coeff):
-        wlist_vk = ac_mp2.get_acmp_df_wlist(self, mo_coeff)
         nkpts = len(mo_coeff)
+        wlist_vk = []
+        df_codes = ["HF"] + self.df_codes + [self.si_limit]
+        for df_code in df_codes:
+            wlist_vk.append(self.get_acmp_df_mat(df_code, mo_coeff))
+        if isinstance(wlist_vk[0], tuple):
+            # spinpol
+            for w in [wlist_vk[0], wlist_vk[-1]]:
+                for k in range(nkpts):
+                    w[0][k][:] *= -1
+                    w[1][k][:] *= -1
+        else:
+            for k in range(nkpts):
+                # non-spinpol
+                wlist_vk[0][k][:] *= -1
+                wlist_vk[-1][k][:] *= -1
         wlist_kv = []
         for k in range(nkpts):
             wlist_kv.append([wlist_k[k] for wlist_k in wlist_vk])
@@ -246,7 +254,7 @@ class ACKMP2(kmp2.KMP2):
     add_to_w_list_ = add_to_w_list_
 
     def get_pt_list_size(self):
-        return 2
+        return 1
     
     def get_df_list_size(self):
         return 1

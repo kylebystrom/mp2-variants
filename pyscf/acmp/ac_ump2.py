@@ -34,12 +34,13 @@ from pyscf.acmp.ac_mp2 import concatenate_w, \
 WITH_T2 = getattr(__config__, 'mp_ump2_with_t2', True)
 
 
-def _get_acmp_df_mat(mp, df_code, mo_coeff):
+def get_acmp_df_mat(mp, df_code, mo_coeff):
     if df_code == "HF":
-        print("EXX")
         vmat = -0.5 * mp._scf.get_k()
+    elif df_code == "KINETIC":
+        vmat = 0.3125**2 * 2 * mp._scf.mol.intor("int1e_kin")
+        vmat = numpy.stack([vmat, vmat], axis=0)
     else:
-        print("VMAT")
         ni = MP2NumInt()
         grids = Grids(mp._scf.mol)
         grids.level = 3
@@ -50,13 +51,10 @@ def _get_acmp_df_mat(mp, df_code, mo_coeff):
                                          verbose=None)
         # vmat does not have spin because strong correlation limit
         # is spin-independent
-        print(vmat.shape)
         vmat = numpy.stack([vmat, vmat], axis=0)
-        print(vmat.shape)
     nocca, noccb = mp.get_nocc()
     occ_coeffa = mo_coeff[0][:, :nocca]
     occ_coeffb = mo_coeff[1][:, :noccb]
-    print(occ_coeffa.shape, vmat[0].shape, occ_coeffb.shape, vmat[1].shape)
     return (
         _acmp_ao2mo(vmat[0], occ_coeffa),
         _acmp_ao2mo(vmat[1], occ_coeffb),
@@ -64,7 +62,7 @@ def _get_acmp_df_mat(mp, df_code, mo_coeff):
     # return _acmp_ao2mo(vmat, occ_coeff)
 
 
-def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
+def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
     if mo_energy is not None or mo_coeff is not None:
         # For backward compatibility.  In pyscf-1.4 or earlier, mp.frozen is
         # not supported when mo_energy or mo_coeff is given.
@@ -109,11 +107,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         eris_ovov = eris_ovov.reshape(nvira,nocca,nvira).transpose(1,0,2)
         ei = lib.direct_sum('a+jb->jab', eia_a[i], eia_a)
         mp.add_to_w_list_(wa_list, eris_ovov, eris_ovov, ei, ACMP_D_AND_X)
-        #t2i = eris_ovov.conj()/lib.direct_sum('a+jb->jab', eia_a[i], eia_a)
-        #emp2a[:] += numpy.einsum('iab,jab->ij', t2i, eris_ovov) * .5
-        #emp2a[:] -= numpy.einsum('iab,jba->ij', t2i, eris_ovov) * .5
-        #if with_t2:
-        #    t2aa[i] = t2i - t2i.transpose(0,2,1)
 
         if isinstance(eris.ovOV, numpy.ndarray) and eris.ovOV.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -124,10 +117,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         eris_ovov = eris_ovov.reshape(nvira,noccb,nvirb).transpose(1,0,2)
         ei = lib.direct_sum('a+jb->jab', eia_a[i], eia_b)
         mp.add_to_w_list_(wb_list, eris_ovov, eris_ovov, ei, ACMP_D_ONLY)
-        #t2i = eris_ovov.conj()/lib.direct_sum('a+jb->jab', eia_a[i], eia_b)
-        #emp2b[:] += numpy.einsum('IaB,JaB->IJ', t2i, eris_ovov) * 0.5
-        #if with_t2:
-        #    t2ab[i] = t2i
 
     for i in range(noccb):
         if isinstance(eris.OVOV, numpy.ndarray) and eris.OVOV.ndim == 4:
@@ -139,11 +128,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         eris_ovov = eris_ovov.reshape(nvirb,noccb,nvirb).transpose(1,0,2)
         ei = lib.direct_sum('a+jb->jab', eia_b[i], eia_b)
         mp.add_to_w_list_(wb_list, eris_ovov, eris_ovov, ei, ACMP_D_AND_X)
-        #t2i = eris_ovov.conj()/lib.direct_sum('a+jb->jab', eia_b[i], eia_b)
-        #emp2b[:] += numpy.einsum('iab,jab->ij', t2i, eris_ovov) * .5
-        #emp2b[:] -= numpy.einsum('iab,jba->ij', t2i, eris_ovov) * .5
-        #if with_t2:
-        #    t2bb[i] = t2i - t2i.transpose(0,2,1)
 
         if isinstance(eris.ovOV, numpy.ndarray) and eris.ovOV.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -154,12 +138,16 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
         eris_ovov = eris_ovov.reshape(nocca,nvira,nvirb)
         ei = lib.direct_sum('b+ia->iab', eia_b[i], eia_a)
         mp.add_to_w_list_(wa_list, eris_ovov, eris_ovov, ei, ACMP_D_ONLY)
-        #t2i = eris_ovov.conj()/lib.direct_sum('b+ia->iab', eia_b[i], eia_a)
-        #emp2a[:] += numpy.einsum('iaB,jaB->ij', t2i, eris_ovov) * 0.5
+    
+    return (wa_list, wb_list), t2
 
 
-    # wa_list = concatentate_w(exxa_oo, wa_list, winfa_oo[None, :, :])
-    # wb_list = concatentate_w(exxb_oo, wb_list, winfb_oo[None, :, :])
+def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
+    if eris is None:
+        eris = mp.ao2mo(mo_coeff)
+    (wa_list, wb_list), t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
+    if mo_coeff is None:
+        mo_coeff = eris.mo_coeff
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)
     wa_list = concatenate_w(wa_list, [w[0] for w in wlist_df])
     wb_list = concatenate_w(wb_list, [w[1] for w in wlist_df])
@@ -169,8 +157,6 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
 
     # TODO don't assign misleading values to ss and os
     emp2 = lib.tag_array(energy, e_corr_ss=0, e_corr_os=energy)
-
-    print("REAL?", emp2.real)
     return emp2.real, t2
 
 
@@ -182,14 +168,14 @@ class ACUMP2(UMP2):
         self.df_codes = []
         self.acmp_wlist = None
 
-    _get_acmp_df_mat = _get_acmp_df_mat
+    get_acmp_df_mat = get_acmp_df_mat
 
     add_to_w_list_ = add_to_w_list_
 
     get_acmp_df_wlist = get_acmp_df_wlist
 
     def get_pt_list_size(self):
-        return 2
+        return 1
     
     def get_df_list_size(self):
         return 1
@@ -197,7 +183,7 @@ class ACUMP2(UMP2):
     def get_e_hf(mp, mo_coeff=None):
         if not hasattr(mp._scf, "to_hf"):
             # This is HF object
-            return super().get_e_hf(mp, mo_coeff=mo_coeff)
+            return super().get_e_hf(mo_coeff=mo_coeff)
         else:
             dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
             mf = mp._scf.to_hf()

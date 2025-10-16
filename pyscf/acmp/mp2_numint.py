@@ -3,6 +3,7 @@ from pyscf import lib
 from pyscf.dft import numint
 from pyscf.dft.numint import (NBINS, _scale_ao_sparse,
                               _dot_ao_ao_sparse, _tau_dot_sparse)
+from pyscf.dft.libxc import eval_xc
 
 
 CFC = 0.3 * (3 * numpy.pi**2)**(2.0 / 3)
@@ -139,6 +140,204 @@ def mgga_ks_plasma_frequency(rho, prefac=None):
     return prefac * ueg_ks_plasma_frequency(rho[0]) * gga_fac
 
 
+def reduced_grad2(sigma, rho):
+    return sigma / (4 * (3 * numpy.pi**2)**(2.0 / 3) * rho**(8.0 / 3))
+
+
+def ef_kappa(mu, c, s2):
+    return c / (1 + s2)
+
+
+def wgea(mu, c, s2, sign=1):
+    kappa = ef_kappa(mu, c, s2)
+    return 1 + sign * (kappa - kappa / (1 + mu * s2 / kappa))
+
+
+def gga_sce_limit(rho, prefac=None):
+    pass
+
+
+def lda_rho(rho, prefac=None):
+    const = -1.44423075 * 0.3125**2 * 2 * CFC
+    return const * rho
+
+
+def mgga_hsq_sce_limit(rho, prefac=None):
+    return mgga_hhh_sce_limit(rho)**2
+
+
+def mgga_hhh_sce_limit(rho, prefac=None):
+    return -0.3125 * numpy.sqrt(2 * rho[4] / (rho[0] + 1e-16))
+    # -0.3125 * numpy.sqrt(2 * CFC * rho[0]**(5/3) / (rho[0] + 1e-8))
+
+
+def mgga_hhh_sce_limit_chi(rho):
+    return mgga_hhh_sce_limit(rho) * (1 - 0.5 * mgga_chi(rho))
+
+
+def gga_hsq_sce_limit(rho, prefac=None):
+    return gga_hhh_sce_limit(rho)**2
+
+
+def gga_hhh_sce_limit(rho, prefac=None):
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    return -0.3125 * numpy.sqrt(sigma / (4 * rho[0]**2 + 1e-16))
+
+
+"""
+The next six functions are for computing the point-charge
+plus continuum model of Seidl, Perdew, and Kurth
+PRA 62, 012502 (2000).
+"""
+
+def lda_pc_model(rho):
+    A = -0.9 * (4 * numpy.pi / 3)**(1.0 / 3)
+    return A * rho**(1.0 / 3)
+
+
+def gga_part_pc_model(rho):
+    B = (3.0 / 350) * (4 * numpy.pi / 3)**(-1.0 / 3)
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    return B * sigma / (rho[0]**(7.0 / 3) + 1e-16)
+
+
+def gga_full_pc_model(rho):
+    return lda_pc_model(rho[0]) + gga_part_pc_model(rho)
+
+
+def _gga_pch_term(lda, s2, mu, k):
+    num = 1 + s2 * mu * (k + 1) / k
+    den = 1 + s2 * mu / k
+    return lda * num / den
+
+
+def _gga_pch_term_v2(lda, s2, mu, k, fl=0):
+    assert mu <= 0
+    assert k <= 0
+    mypow = 2
+    #return lda * numpy.maximum(1 + mu * s2, 0)
+    return lda * (fl + (1-fl) * numpy.exp(s2 * mu / (1 - fl) + s2**2 * k))
+    num = 1.0
+    den = 1 - s2 * mu / mypow
+    return lda * num / den**mypow
+
+
+def _gga_pch_term_v3(lda, s2, mu, k):
+    assert mu >= 0 and k >= 0
+    fac = 1 + k - k / (1 + mu * s2 / k)
+    return lda * fac
+
+
+def gga_pch_winf(rho):
+    A = -0.9 * (4 * numpy.pi / 3)**(1.0 / 3)
+    # mu = -3**(1.0 / 3) * (2 * numpy.pi)**(2.0 / 3) / 35
+    sfac = 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    mu = (3.0 / 350) * (4 * numpy.pi / 3)**(-1.0 / 3) * sfac / A
+    k = -7.11
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / sfac
+    lda = A * rho[0]**(1.0 / 3)
+    return _gga_pch_term(lda, s2, mu, k)
+
+
+def gga_pch_winf_v2(rho):
+    A = -0.9 * (4 * numpy.pi / 3)**(1.0 / 3)
+    # mu = -3**(1.0 / 3) * (2 * numpy.pi)**(2.0 / 3) / 35
+    sfac = 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    mu = (3.0 / 350) * (4 * numpy.pi / 3)**(-1.0 / 3) * sfac / A
+    k = -7.11
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / sfac
+    # NOTE added for numerical stability
+    s2[rho[0] <= 1e-16] = 0
+    lda = A * rho[0]**(1.0 / 3)
+    # return _gga_pch_term_v2(lda, s2, mu, 0.0, fl=0.35)
+    return _gga_pch_term_v2(lda, s2, mu, 0.0, fl=0.5)
+    # return _gga_pch_term_v3(lda, rho[0], s2, mu, fl=0.6)
+
+
+def lda_pc_model_grad(rho):
+    C = 0.5 * (3 * numpy.pi)**0.5
+    return C * rho**0.5
+
+
+def gga_part_pc_model_grad(rho):
+    D = -0.02558
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    return D * sigma / (rho[0]**(13.0 / 6) + 1e-16)
+
+
+def gga_full_pc_model_grad(rho):
+    return lda_pc_model_grad(rho[0]) + gga_part_pc_model_grad(rho)
+
+
+def gga_pch_winfp(rho):
+    C = 0.5 * (3 * numpy.pi)**0.5
+    mu = -0.7222
+    sfac = 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    #mu = -0.02558 * sfac / C
+    k = -99.11
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / sfac
+    lda = C * rho[0]**0.5
+    return _gga_pch_term(lda, s2, mu, k)
+
+
+def gga_pch_winfp_v2(rho):
+    A = -0.9 * (4 * numpy.pi / 3)**(1.0 / 3)
+    C = 0.5 * (3 * numpy.pi)**0.5
+    #return C / A * rho[0]**(1.0 / 6) * gga_pch_winf_v2(rho)
+    mu = -0.7222
+    sfac = 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    #mu = -0.02558 * sfac / C
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / sfac
+    # NOTE added for numerical stability
+    s2[rho[0] <= 1e-16] = 0
+    lda = C * rho[0]**0.5
+    # return numpy.ones_like(lda) * 1e-6
+    return _gga_pch_term_v2(lda, s2, mu, 0.0, fl=0.0)
+
+
+def gga_pch_winf2_winfp_ratio(rho):
+    A = -0.9 * (4 * numpy.pi / 3)**(1.0 / 3)
+    C = 0.5 * (3 * numpy.pi)**0.5
+    sfac = 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    mu = (3.0 / 350) * (4 * numpy.pi / 3)**(-1.0 / 3) * sfac / A
+    mup = -0.7222
+    mup = -0.638
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / sfac
+    lda = A**2 / C * rho[0]**(1.0 / 6)
+    # return lda * (1 + (2 * mu - mup) * s2)
+    # return _gga_pch_term_v2(lda, s2, -0.5, 0.0, fl=0.2)
+    return _gga_pch_term_v3(lda, s2, (2 * mu - mup), 0.2)
+
+
+def mgga_ueg_sce_limit(rho, lda_const=1.44423075, prefac=None):
+    dens = numpy.maximum(1e-8, rho[0])
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / 2**(2.0 / 3)
+    s2 /= 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    return -lda_const * dens**(1.0 / 3)
+
+
+def mgga_ueg_sce_limit_chi(rho):
+    return mgga_ueg_sce_limit(rho) * mgga_chi(rho)
+
+
+def mgga_sce_gea(rho, lda_const=1.44423075):
+    dens = numpy.maximum(1e-8, rho[0])
+    sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+    s2 = sigma / rho[0]**(8.0 / 3) / 2**(2.0 / 3)
+    s2 /= 4 * (3 * numpy.pi**2)**(2.0 / 3)
+    const = 0.0053 * 4 * (3 * numpy.pi ** 2) ** (2.0 / 3) / lda_const
+    return -lda_const * dens**(1.0 / 3) * (wgea(const, 20, s2, sign=-1) - 1)
+
+
+# def mgga_sce_gea_chi(rho, lda_const=1.44423075)
+
+
 def mgga_sce_limit(rho, prefac=None):
     rs_inv = ((4 * numpy.pi * rho[0]) / 3.0)**(1.0 / 3)
     sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
@@ -156,7 +355,7 @@ def mgga_sce_limit(rho, prefac=None):
     # maxfac = 1.05
     maxfac = 0.59
     gradfac = 0.59
-    ldafac = 0.5 * 0.896
+    ldafac = 0.896
     mypow = 1
     chi = 2 * tau0**mypow
     chi /= tau0**mypow + numpy.maximum(tau - tauw, 0)**mypow
@@ -164,7 +363,13 @@ def mgga_sce_limit(rho, prefac=None):
     fac = ldafac + (maxfac - ldafac) * chi
     fac += gradfac * (kappa - kappa / (1 + mu * s2 / kappa))
     fac *= rs_inv
+    # dens = rho[0].copy()
+    # dens[dens < 1e-6] = 0
+    # return -0.3125 * numpy.sqrt(2 * tau / (rho[0] + 1e-8))
+    # const = 0.0053 * 4 * (3 * numpy.pi ** 2) ** (2.0 / 3) / 1.44423
+    # return -1.44423075 * dens**(1.0 / 3) * wgea(const, 20, s2, sign=-1)
     return -fac
+    # return -2 * ldafac * rs_inv
 
 
 def mgga_chi(rho):
@@ -172,10 +377,95 @@ def mgga_chi(rho):
     tauw = sigma / (8 * rho[0] + 1e-8)
     tau = rho[4]
     tau0 = CFC * rho[0]**(5.0 / 3)
-    mypow = 2
-    chi = tau0**mypow
-    chi /= tau0**mypow + numpy.maximum(tau - tauw, 0)**mypow + 1e-8
-    return 1 - chi
+    taudiff = tau - tauw
+    chi = 2 * taudiff * taudiff
+    chi /= tau0 * tau0 + taudiff * taudiff + 1e-32
+    return chi
+
+
+def mgga_r2scan_strong_corr(rho, small_rho=1e-8):
+    # scale the density down really small
+    gamma = (rho[0] / small_rho)**(1.0 / 3)
+    rho = rho.copy()
+    # density is small_rho now
+    rho[0] /= gamma**3
+    rho[1:4] /= gamma**4
+    rho[4] /= gamma**5
+    exc = eval_xc("MGGA_X_R2SCAN,MGGA_C_R2SCAN", rho, deriv=0)[0]
+    return exc * gamma
+
+
+def _mgga_r2scan_scaled(rho, gamma):
+    rho = rho.copy()
+    # density is small_rho now
+    rho[0] /= gamma**3
+    rho[1:4] /= gamma**4
+    rho[4] /= gamma**5
+    exc = eval_xc("MGGA_X_R2SCAN,MGGA_C_R2SCAN", rho, deriv=0)[0]
+    return exc
+
+
+def mgga_r2scan_winf_expansion(rho, small_rho=1e-8):
+    # scale the density down really small
+    delta = 1e-4
+    gamma = (rho[0] / small_rho)**(1.0 / 3)
+    exc0 = _mgga_r2scan_scaled(rho, gamma)
+    excm = _mgga_r2scan_scaled(rho, gamma - delta * gamma)
+    excp = _mgga_r2scan_scaled(rho, gamma + delta * gamma)
+    d1 = (excp - excm) / (2 * delta * gamma)
+    d2 = (excp + excm - 2 * exc0) / (delta * gamma)**2
+    dres = 2 * exc0 + 4 * gamma * d1 + gamma**2 * d2
+    dres *= -2 * gamma**1.5
+    # res = -dres / gamma**0.5 + 2 * gamma * exc0 + gamma**2 * d1
+    res = -dres / gamma**0.5 + 2 * gamma * exc0 + gamma**2 * d1
+    # res = exc0 * gamma
+    # dres = gamma**0.5 * (2 * gamma * exc0 + gamma**2 * d1 - res)
+    return res, dres
+
+
+def mgga_r2scan_winf(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_expansion(rho, small_rho)[0]
+
+
+def mgga_r2scan_winfp(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_expansion(rho, small_rho)[1]
+
+
+def mgga_r2scan_walpha(rho, gamma):
+    delta = 1e-4
+    exc0 = _mgga_r2scan_scaled(rho, gamma)
+    excm = _mgga_r2scan_scaled(rho, gamma - delta * gamma)
+    excp = _mgga_r2scan_scaled(rho, gamma + delta * gamma)
+    dexc0 = (excp - excm) / (2 * delta)
+    return 2 * gamma * exc0 + gamma * dexc0
+
+
+def mgga_r2scan_winf_exp2(rho, small_rho=1e-9):
+    gamma_facs = [0.9, 1.0, 1.1]
+    gamma0 = (rho[0] / small_rho)**(1.0 / 3)
+    gammas = [gamma0 * gf for gf in gamma_facs]
+    was = [mgga_r2scan_walpha(rho, gamma) for gamma in gammas]
+    gamma_facs = numpy.array(gamma_facs)
+    x = numpy.array([numpy.ones_like(gamma_facs), 1.0 / gamma_facs**0.5, 1.0 / gamma_facs]).T
+    y = numpy.linalg.solve(x, was)
+    return y[0], gamma0**0.5 * y[1], gamma0 * y[2]
+
+
+def mgga_r2scan_v2_winf(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_exp2(rho, small_rho)[0]
+
+
+def mgga_r2scan_v2_winfp(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_exp2(rho, small_rho)[1]
+
+
+def mgga_r2scan_v2_winfpp(rho, small_rho=1e-9):
+    return mgga_r2scan_winf_exp2(rho, small_rho)[2]
+
+
+def mgga_r2scan_v2_winfpp_denom(rho, small_rho=1e-9):
+    res = mgga_r2scan_winf_exp2(rho, small_rho)
+    return 2 * res[2] - 3 * res[1]**2 / res[0]
 
 
 def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
@@ -304,7 +594,7 @@ def nr_ump2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
 PLASMA_FREQUENCY_MODELS = {
     "PLASMA_LDA_WP": ("LDA", lda_plasma_frequency),
     "PLASMA_GGA_WP": ("GGA", gga_ks_plasma_frequency),
-    "PLASMA_MGGA_WP": ("MGGA", mgga_ks_plasma_frequency),
+    "PLASMA_MGGA_WP": ("MGGA", mgga_plasma_frequency),
 }
 
 
@@ -325,8 +615,9 @@ class MP2NumIntMixin:
         elif xc_code.startswith("PLASMA_"):
             return PLASMA_FREQUENCY_MODELS[xc_code][1](rho), None, None, None
         else:
-            return super().eval_xc_eff(xc_code, rho, deriv=deriv, omega=omega,
+            res = super().eval_xc_eff(xc_code, rho, deriv=deriv, omega=omega,
                                        xctype=xctype, verbose=verbose)
+            return res
 
 
 class MP2NumInt(MP2NumIntMixin, numint.NumInt):
