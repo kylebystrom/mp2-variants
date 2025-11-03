@@ -15,3 +15,7 @@ Also included is the `pyscf.acmp.ueg` module for performing PT2 calculations on 
 (non-spin-polarized) the uniform electron gas.
 
 All methods under `pyscf.acmp.pbc` are experimental and not thoroughly tested.
+
+Also note that for AC-PT2, same-spin and opposite-spin contributions are not well-defined,
+so in the current code. the opposite-spin contribution is set to the full correlation energy and the same-spin
+contribution is set to zero.
