@@ -1,5 +1,8 @@
 '''
 Helper functions for the uniform electron gas
+
+Author: Timothy C. Berkelbach
+        Kyle Bystrom
 '''
 
 import numpy as np
