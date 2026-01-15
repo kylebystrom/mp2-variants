@@ -48,6 +48,10 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     nvir = eris.nvir
     eia = mo_energy[:nocc,None] - mo_energy[None,-nvir:]
 
+    v1 = mp._get_v1(mo_energy, eris.mo_coeff, occs)
+    v1ia = v1[:nocc,-nvir:]
+    v1ia[:] *= v1ia.conj()
+
     #ediff = mo_energy - mu
     #nn_all = numpy.exp(0.5 * mp.beta * ediff)
     #dn_all = dn_all + numpy.exp(0.5 * mp.beta * ediff)
@@ -66,6 +70,23 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     a3_ia = a3_ia + (1 - occs[:nocc, None]) * occs[:nocc, None]
     a3_ia[:] *= -1 * mp.beta ** 2
 
+    inve = eia.copy()
+    inve[numpy.abs(inve) < 1e-10] = -2 / mp.beta
+    inve[:] = 1.0 / inve
+
+    if mp.ensemble is None:
+        e1 = (2 * inve * v1ia * dn_ia).sum()
+        n1 = 0
+        n2 = 0
+    elif mp.ensemble in ["gc", "c_scf"]:
+        e1 = (2 * inve * v1ia * dn_ia * (2 + anom_ia)).sum()
+        n1 = (-inve * v1ia * dn_ia * a2_ia).sum()
+        n2 = (-inve * v1ia * dn_ia * (a2_ia * a2_ia + a3_ia)).sum()
+    elif mp.ensemble == "c_pt2":
+        raise NotImplementedError
+    else:
+        raise ValueError("Unsupported thermal ensemble")
+
     with_t2 = False  # TODO
     if with_t2:
         t2 = numpy.empty((nocc,nocc,nvir,nvir), dtype=eris.ovov.dtype)
@@ -75,8 +96,8 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     emp2_ss = emp2_os = 0
     small_gap = 1e-9
     n0_count = 0
-    nval_count = 0
-    dnval_count = 0
+    nval_count = n1
+    dnval_count = n2
     print("MU", mu)
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
@@ -136,7 +157,7 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
             t2[i] = t2i
 
     print("NVAL", nval_count, n0_count, nval_count + n0_count, dnval_count)
-    emp2_ss = emp2_ss.real
+    emp2_ss = emp2_ss.real + e1
     emp2_os = emp2_os.real
     emp2 = lib.tag_array(emp2_ss+emp2_os, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
 
@@ -262,7 +283,30 @@ class FTMP2Mixin:
     @nocc.setter
     def nocc(self, n):
         raise ValueError("Cannot set nocc for FT-MP2")
-    
+
+    def _get_v1(self, mo_energy, mo_coeff, ac_occ):
+        """
+        Get the single-particle term of the Hamiltonian perturbation.
+        """
+        ac_occ = 2 * ac_occ
+        if self.frozen is None:
+            mo_occ = ac_occ.copy()
+        elif isinstance(self.frozen, (int, numpy.integer)):
+            mo_occ = self._scf.mo_occ.copy()
+            mo_occ[self.frozen:] = ac_occ
+        elif hasattr(self.frozen, '__len__'):
+            mask = self.get_frozen_mask()
+            mo_occ = self._scf.mo_occ.copy()
+            mo_occ[mask] = ac_occ
+        else:
+            raise NotImplementedError
+        dm = self._scf.make_rdm1(self._scf.mo_coeff, mo_occ)
+        vj, vk = self._scf.get_jk(self.mol, dm)
+        vhf = vj - 0.5 * vk
+        fockao = self._scf.get_fock(vhf=vhf, dm=dm)
+        fock = mo_coeff.conj().T.dot(fockao).dot(mo_coeff)
+        return fock - numpy.diag(mo_energy)
+
     def kernel(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         '''
         Args:
@@ -337,6 +381,16 @@ class FTMP2Mixin:
         mu, occs = _smearing_optimize(_fermi_smearing_occ, self._scf.mo_energy,
                                       nelec // 2, 1.0 / self.beta)
         return mu.item()
+
+    def get_e_hf(mp, mo_coeff=None):
+        if not hasattr(mp._scf, "to_hf"):
+            # This is HF object
+            return super().get_e_hf(mo_coeff=mo_coeff)
+        else:
+            dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
+            mf = mp._scf.to_hf()
+            vhf = mf.get_veff(mf.mol, dm)
+            return mf.energy_tot(dm=dm, vhf=vhf)
 
 
 class FTMP2(FTMP2Mixin, MP2Base):
