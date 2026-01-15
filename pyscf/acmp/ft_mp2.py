@@ -55,6 +55,17 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     #dn_vir = 1.0 / dn_all[-nvir:]
     dn_ia = occs[:nocc, None] * (1 - occs[None, -nvir:])
 
+    anom_ia = mo_energy[None, -nvir:] * occs[None, -nvir:]
+    anom_ia = anom_ia - mo_energy[:nocc,None] * (1 - occs[:nocc, None])
+    anom_ia[:] *= mp.beta
+
+    a2_ia = -occs[None, -nvir:] + (1 - occs[:nocc, None])
+    a2_ia[:] *= mp.beta
+
+    a3_ia = occs[None, -nvir:] * (1 - occs[None, -nvir:])
+    a3_ia = a3_ia + (1 - occs[:nocc, None]) * occs[:nocc, None]
+    a3_ia[:] *= -1 * mp.beta ** 2
+
     with_t2 = False  # TODO
     if with_t2:
         t2 = numpy.empty((nocc,nocc,nvir,nvir), dtype=eris.ovov.dtype)
@@ -63,7 +74,10 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
 
     emp2_ss = emp2_os = 0
     small_gap = 1e-9
+    n0_count = 0
     nval_count = 0
+    dnval_count = 0
+    print("MU", mu)
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -72,7 +86,8 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
         else:
             gi = numpy.asarray(eris.ovov[i*nvir:(i+1)*nvir])
 
-        nval_count += occs[i]
+        n0_count += 2 * occs[i]
+        dnval_count += 2 * mp.beta * occs[i] * (1 - occs[i])
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
         
@@ -81,8 +96,36 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
         #ei *= lib.einsum('jb,a->jba', dn_ia, dn_ia[i])
         #t2i = gi.conj() * ei
         
-        ei[numpy.abs(ei) < small_gap] = -2 / mp.beta
-        ei[:] = lib.einsum('jb,a->jba', dn_ia, dn_ia[i]) / ei
+        if mp.ensemble is None:
+            ei[numpy.abs(ei) < small_gap] = -2 / mp.beta
+            ei[:] = lib.einsum('jb,a->jba', dn_ia, dn_ia[i]) / ei
+        elif mp.ensemble in ["gc", "c_scf"]:
+            cond = numpy.abs(ei) < small_gap
+            ai = lib.direct_sum('jb+a->jba', anom_ia, anom_ia[i])
+            a2i = lib.direct_sum('jb+a->jba', a2_ia, a2_ia[i])
+            a3i = lib.direct_sum('jb+a->jba', a3_ia, a3_ia[i])
+            ei[cond] = 1
+            ni = -1.0 / ei
+            ni[cond] = 0.5 * mp.beta
+            ni[:] *= a2i * lib.einsum('jb,a->jba', dn_ia, dn_ia[i])
+            ni2 = -1.0 / ei
+            ni2[cond] = 0.5 * mp.beta
+            ni2[:] *= (a2i * a2i + a3i) * lib.einsum('jb,a->jba', dn_ia, dn_ia[i])
+            ei[:] = (1 + ai) / ei
+            ei[cond] = -mp.beta * (1 + 0.5 * ai[cond])
+            ei[:] *= lib.einsum('jb,a->jba', dn_ia, dn_ia[i])
+            n2i = gi.conj() * ni
+            ndi = numpy.einsum('jab,jab', n2i, gi) * 2
+            nxi = -numpy.einsum('jab,jba', n2i, gi)
+            nval_count += ndi + nxi
+            n2i2 = gi.conj() * ni2
+            ndi = numpy.einsum('jab,jab', n2i2, gi) * 2
+            nxi = -numpy.einsum('jab,jba', n2i2, gi)
+            dnval_count += ndi + nxi
+        elif mp.ensemble == "c_pt2":
+            raise NotImplementedError
+        else:
+            raise ValueError("Unsupported thermal ensemble")
         t2i = gi.conj() * ei
 
         edi = numpy.einsum('jab,jab', t2i, gi) * 2
@@ -92,11 +135,12 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
         if with_t2:
             t2[i] = t2i
 
+    print("NVAL", nval_count, n0_count, nval_count + n0_count, dnval_count)
     emp2_ss = emp2_ss.real
     emp2_os = emp2_os.real
     emp2 = lib.tag_array(emp2_ss+emp2_os, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
 
-    return emp2.real, t2
+    return emp2.real, nval_count + n0_count, dnval_count
 
 
 def _occ_helper(x, order):
@@ -177,7 +221,7 @@ class FTMP2Mixin:
     _keys = {"mu_algo", "occ_tol", "mu_tol"}
 
     def __init__(self, beta=1, mu_algo="mu0", mu0=None,
-                 occ_tol=1e-9, mu_tol=1e-6):
+                 occ_tol=1e-9, mu_tol=1e-6, ensemble=None):
         """
         beta (float): 1 / (k_B * T) in atomic units. Default is equivalent to
             a temperature of ~316 K.
@@ -199,6 +243,8 @@ class FTMP2Mixin:
             fully occupied.
         mu_tol (float): Only used for mu_algo="search". The tolerance for
             converging mu with the Newton algorithm.
+        ensemble (str, None): Thermal ensemble for the finite temperature
+            effects. For 
         """
         self.beta = beta
         if mu_algo not in ["mu0", "search", "pt2"]:
@@ -207,6 +253,7 @@ class FTMP2Mixin:
         self.mu0 = mu0
         self.occ_tol = occ_tol
         self.mu_tol = mu_tol
+        self.ensemble = ensemble
         self._nocc = None
 
     @property
@@ -248,13 +295,25 @@ class FTMP2Mixin:
         if self._scf.converged:
             if self.mu_algo != "mu0":
                 raise NotImplementedError
-            self.e_corr, self.t2 = gc_kernel(
+            self.e_corr, n, dn = gc_kernel(
                 self,
                 mo_energy=mo_energy,
                 mo_coeff=mo_coeff,
                 eris=eris,
                 mu=mu,
             )
+            if self.ensemble == "c_scf":
+                delta = n - get_correct_nval(self)
+                while abs(delta) > self.mu_tol:
+                    mu = mu - delta / dn
+                    self.e_corr, n, dn = gc_kernel(
+                        self,
+                        mo_energy=mo_energy,
+                        mo_coeff=mo_coeff,
+                        eris=eris,
+                        mu=mu,
+                    )
+                    delta = n - get_correct_nval(self)
         else:
             raise NotImplementedError("Non-canonical FT-MP2")
 

@@ -21,19 +21,22 @@ def make_scf(mol):
     ks.grids.level = 5
     return ks
 
-h2 = get_h2(5.0)
+h2 = get_h2(2.5)
 
 mf = make_scf(h2)
 mf.kernel()
 
-beta = 60.0
+beta = 10.0
 
 ftmf = smearing(make_scf(h2), sigma=1.0 / beta)
 ftmf.kernel()
 
 pt = MP2(mf)
 pt.kernel()
-ftpt = FTMP2(mf, beta=beta)
+print(ftmf.mo_energy)
+# ftpt = FTMP2(ftmf, beta=beta, mu0=-2.013+0.00036)
+ftpt = FTMP2(ftmf, beta=beta)
+ftpt.ensemble = "c_scf"
 ftpt.kernel()
 ftpt = FTMP2(ftmf, beta=beta)
 ftpt.kernel()
