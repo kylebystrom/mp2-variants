@@ -48,9 +48,13 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     nvir = eris.nvir
     eia = mo_energy[:nocc,None] - mo_energy[None,-nvir:]
 
-    v1 = mp._get_v1(mo_energy, eris.mo_coeff, occs)
+    de0, v1 = mp._get_v1(mo_energy, eris.mo_coeff, occs)
+    dvdu, d2vdu2, dvdeu = mp._get_dv1(mo_energy, eris.mo_coeff, occs)
     v1ia = v1[:nocc,-nvir:]
-    v1ia[:] *= v1ia.conj()
+    dvdu = dvdu[:nocc,-nvir:]
+    d2vdu2 = d2vdu2[:nocc,-nvir:]
+    dvdeu = dvdeu[:nocc,-nvir:]
+    v1ia2 = v1ia * v1ia.conj()
 
     #ediff = mo_energy - mu
     #nn_all = numpy.exp(0.5 * mp.beta * ediff)
@@ -75,13 +79,26 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     inve[:] = 1.0 / inve
 
     if mp.ensemble is None:
-        e1 = (2 * inve * v1ia * dn_ia).sum()
+        e1 = (2 * inve * v1ia2 * dn_ia).sum()
         n1 = 0
         n2 = 0
     elif mp.ensemble in ["gc", "c_scf"]:
-        e1 = (2 * inve * v1ia * dn_ia * (2 + anom_ia)).sum()
-        n1 = (-inve * v1ia * dn_ia * a2_ia).sum()
-        n2 = (-inve * v1ia * dn_ia * (a2_ia * a2_ia + a3_ia)).sum()
+        # factor of 2 for spin
+        e1 = (2 * inve * v1ia2 * dn_ia * (2 + anom_ia)).sum()
+        # another factor of 2 for d/du (v^2)
+        e1 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdeu)).sum()
+        e1 += de0
+        dndu = mp.beta * occs[:nocc] * (1 - occs[:nocc])
+        e1 -= (2 * mo_energy[:nocc] * numpy.diag(v1ia).real * dndu).sum()
+        n1 = (-2 * inve * v1ia2 * dn_ia * a2_ia).sum()
+        n1 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdu)).sum()
+        n1 -= (2 * numpy.diag(v1ia).real * dndu).sum()
+        n2 = (-2 * inve * v1ia2 * dn_ia * (a2_ia * a2_ia + a3_ia)).sum()
+        n2 += (-8 * inve * dn_ia * a2_ia * numpy.real(v1ia.conj() * dvdu)).sum()
+        n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * d2vdu2)).sum()
+        n2 += (-4 * inve * dn_ia * numpy.real(dvdu.conj() * dvdu)).sum()
+        n2 -= (2 * numpy.diag(dvdu) * dndu).sum()
+        n2 -= (2 * numpy.diag(v1ia).real * dndu * mp.beta * (1 - 2 * occs[:nocc])).sum()
     elif mp.ensemble == "c_pt2":
         raise NotImplementedError
     else:
@@ -98,7 +115,6 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     n0_count = 0
     nval_count = n1
     dnval_count = n2
-    print("MU", mu)
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -156,7 +172,7 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
         if with_t2:
             t2[i] = t2i
 
-    print("NVAL", nval_count, n0_count, nval_count + n0_count, dnval_count)
+    # print("NVAL", nval_count, n0_count, nval_count + n0_count, dnval_count)
     emp2_ss = emp2_ss.real + e1
     emp2_os = emp2_os.real
     emp2 = lib.tag_array(emp2_ss+emp2_os, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
@@ -239,7 +255,8 @@ def get_correct_nval(mp):
 
 
 class FTMP2Mixin:
-    _keys = {"mu_algo", "occ_tol", "mu_tol"}
+    _keys = {"mu_algo", "occ_tol", "mu_tol", "mu0", "beta",
+             "ensemble", "max_mu_steps"}
 
     def __init__(self, beta=1, mu_algo="mu0", mu0=None,
                  occ_tol=1e-9, mu_tol=1e-6, ensemble=None):
@@ -276,6 +293,7 @@ class FTMP2Mixin:
         self.mu_tol = mu_tol
         self.ensemble = ensemble
         self._nocc = None
+        self.max_mu_steps = 50
 
     @property
     def nocc(self):
@@ -303,9 +321,37 @@ class FTMP2Mixin:
         dm = self._scf.make_rdm1(self._scf.mo_coeff, mo_occ)
         vj, vk = self._scf.get_jk(self.mol, dm)
         vhf = vj - 0.5 * vk
+
+        if not hasattr(self._scf, "to_hf"):
+            mf = self._scf
+        else:
+            mf = self._scf.to_hf()
+        e0 = mf.energy_tot(dm=dm, vhf=vhf)
+        de0 = e0 - self.e_hf
+
         fockao = self._scf.get_fock(vhf=vhf, dm=dm)
         fock = mo_coeff.conj().T.dot(fockao).dot(mo_coeff)
-        return fock - numpy.diag(mo_energy)
+        return de0, fock - numpy.diag(mo_energy)
+
+    def _get_dv1(self, mo_energy, mo_coeff, ac_occ):
+        mo_occ = ac_occ * (1 - ac_occ) * self.beta
+        dm = self._make_rdm1_for_dv(mo_coeff, 2 * mo_occ)
+        vj, vk = self._scf.get_jk(self.mol, dm)
+        vhf1 = vj - 0.5 * vk
+        vhf1 = mo_coeff.conj().T.dot(vhf1).dot(mo_coeff)
+
+        mo_occ *= self.beta * (1 - 2 * ac_occ)
+        dm = self._make_rdm1_for_dv(mo_coeff, 2 * mo_occ)
+        vj, vk = self._scf.get_jk(self.mol, dm)
+        vhf2 = vj - 0.5 * vk
+        vhf2 = mo_coeff.conj().T.dot(vhf2).dot(mo_coeff)
+
+        mo_occ = ac_occ * (1 - ac_occ) * self.beta * mo_energy
+        dm = self._make_rdm1_for_dv(mo_coeff, 2 * mo_occ)
+        vj, vk = self._scf.get_jk(self.mol, dm)
+        vhf3 = vj - 0.5 * vk
+        vhf3 = mo_coeff.conj().T.dot(vhf3).dot(mo_coeff)
+        return vhf1, vhf2, vhf3
 
     def kernel(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         '''
@@ -348,7 +394,7 @@ class FTMP2Mixin:
             )
             if self.ensemble == "c_scf":
                 delta = n - get_correct_nval(self)
-                while abs(delta) > self.mu_tol:
+                for step in range(self.max_mu_steps):
                     mu = mu - delta / dn
                     self.e_corr, n, dn = gc_kernel(
                         self,
@@ -358,6 +404,10 @@ class FTMP2Mixin:
                         mu=mu,
                     )
                     delta = n - get_correct_nval(self)
+                    if abs(delta) < self.mu_tol:
+                        break
+                else:
+                    raise RuntimeError("Chemical potential not converged!")
         else:
             raise NotImplementedError("Non-canonical FT-MP2")
 
@@ -391,6 +441,21 @@ class FTMP2Mixin:
             mf = mp._scf.to_hf()
             vhf = mf.get_veff(mf.mol, dm)
             return mf.energy_tot(dm=dm, vhf=vhf)
+
+    # full density matrix for RHF
+    def _make_rdm1_for_dv(self, mo_coeff, mo_occ):
+        '''One-particle density matrix in AO representation
+
+        Args:
+            mo_coeff : 2D ndarray
+                Orbital coefficients. Each column is one orbital.
+            mo_occ : 1D ndarray
+                Occupancy
+        Returns:
+            One-particle density matrix, 2D ndarray
+        '''
+        dm = (mo_coeff*mo_occ).dot(mo_coeff.conj().T)
+        return dm
 
 
 class FTMP2(FTMP2Mixin, MP2Base):
@@ -441,6 +506,8 @@ def _make_eris(mp, mo_coeff=None, ao2mofn=None, mu=None, verbose=None):
     mo_coeff = eris.mo_coeff
 
     nocc, nvir, nval = mp.get_nocc_nvir_nval(mu)
+    nvir = max(nvir, 1)
+    nocc = max(nocc, 1)
     eris.nocc = nocc
     eris.nvir = nvir
     mem_incore, mem_outcore, mem_basic = _mem_usage(nocc, nvir)
@@ -459,7 +526,7 @@ def _make_eris(mp, mo_coeff=None, ao2mofn=None, mu=None, verbose=None):
         if callable(ao2mofn):
             eris.ovov = ao2mofn((co,cv,co,cv)).reshape(nocc*nvir,nocc*nvir)
         else:
-            eris.ovov = ao2mo.general(mp._scf._eri, (co,cv,co,cv))
+            eris.ovov = ao2mo.general(mp._scf._eri, (co,cv,co,cv), compact=False)
 
     elif getattr(mp._scf, 'with_df', None):
         # To handle the PBC or custom 2-electron with 3-index tensor.
@@ -468,12 +535,14 @@ def _make_eris(mp, mo_coeff=None, ao2mofn=None, mu=None, verbose=None):
         #         '3-tensor integrals.\n'
         #         'You can switch to dfmp2.MP2 for better performance')
         log.debug('transform (ia|jb) with_df')
-        eris.ovov = mp._scf.with_df.ao2mo((co,cv,co,cv))
+        eris.ovov = mp._scf.with_df.ao2mo((co,cv,co,cv), compact=False)
 
     else:
         log.debug('transform (ia|jb) outcore')
         eris.feri = lib.H5TmpFile()
         eris.ovov = _ao2mo_ovov(mp, co, cv, eris.feri, max(2000, max_memory), log)
+
+    # print(eris.nocc, eris.nvir, co.shape, cv.shape, eris.ovov.shape)
 
     log.timer('Integral transformation', *time0)
     return eris
