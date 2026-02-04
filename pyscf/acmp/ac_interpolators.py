@@ -50,6 +50,8 @@ class ACMatrix:
     """
 
     def __init__(self, arr):
+        if np.isnan(arr).any():
+            raise ValueError("array must be finite to make ACMatrix")
         self._data = arr.copy()
         self._data[:] += self._data.T.conj()
         self._data[:] *= 0.5
@@ -198,7 +200,8 @@ class ACW:
     def compute_cache(self, w_list):
         _check_fmt(w_list)
         self.clear_cache()
-        winf = _get_corrected_winf(w_list[-1], w_list[1])
+        # winf = _get_corrected_winf(w_list[-1], w_list[1])
+        winf = get_damped_winf_diff(w_list[-1], w_list[1], 8)
         self._cache["w0"] = w_list[0]
         self._cache["wr"] = w_list[0] / winf
 
@@ -264,14 +267,33 @@ def _apply_func(func, mat):
 
 
 def get_damped_winf_diff(winf, exx, a):
-    ratio = winf / exx
+    ratio = winf / exx + 1e-10
     func = lambda x: np.log(1 + np.exp(a * (1 - x))) / np.log(1 + np.exp(a))
     if isinstance(winf, ACMatrix):
         val = ratio.apply(func)
     else:
         val = func(ratio)
-    wdiff = winf - (exx * (1 - val))
+    wdiff = winf * (1 - ratio**-1 * (1 - val))
     return wdiff
+
+
+def get_damped_winf_diff_grad(winf, exx, a):
+    ratio = winf / exx
+    func = lambda x: np.log(1 + np.exp(a * (1 - x))) / np.log(1 + np.exp(a))
+    dfunc = lambda x: (
+        a * (np.exp(a * (1 - x)) + 1e-14)
+        / (np.log(1 + np.exp(a * (1 - x)) + 1e-14)
+            * np.log(1 + np.exp(a)))
+    )
+    if isinstance(winf, ACMatrix):
+        val = ratio.apply(func)
+        dval = ratio.apply(dfunc)
+    else:
+        val = func(ratio)
+        dval = dfunc(ratio)
+    dwinf = winf / winf - exx * dval / exx
+    dexx = val - 1 + exx * dval * winf / exx**2
+    return dwinf, dexx
 
 
 class SPL_ACW(ACW):
@@ -374,6 +396,10 @@ class MOD_ISI_ACW(SPL_ACW):
         w0p, w0, winfp = w_list[:3]
         winf = w_list[-1]
         if isinstance(w0p, np.ndarray):
+            w0p = np.clip(w0p, 0, 1e100)
+            winf = np.clip(winf, 0, 1e100)
+            w0 = np.clip(w0, 0, 1e100)
+            winfp = np.clip(winfp, 0, 1e100)
             assert (w0p >= -1e-14).all()
             assert (winf >= -1e-14).all()
             assert (w0 >= -1e-14).all()
@@ -386,11 +412,33 @@ class MOD_ISI_ACW(SPL_ACW):
             for acm in [w0p, winf, w0, winfp]:
                 corr_eigvals_(acm)
         winf_eff = get_damped_winf_diff(winf, w0, 8)
+        self._cache["wterms"] = (w0, w0p, winf, winfp, winf_eff)
         self._cache["terms"] = (w0p, w0p * winfp / winf_eff**2, w0p / winf_eff)
 
     def __call__(self, alpha):
         x, y, z = self._cache["terms"]
         return alpha * x / (1 + alpha**0.5 * y + alpha * z)
+
+
+class MOD_ISI_ACW_MAT(SPL_ACW):
+    def compute_cache(self, w_list):
+        # note w0 is exx, w0p is 2*EMP2
+        self.clear_cache()
+        w0p, w0, winfp = w_list[:3]
+        winf = w_list[-1]
+        if isinstance(w0p, np.ndarray):
+            raise NotImplementedError
+        else:
+            assert not np.isnan(w0p._data).any()
+            assert not np.isnan(winf._data).any()
+            assert not np.isnan(w0._data).any()
+            assert not np.isnan(winfp._data).any()
+            for acm in [w0p, winf, w0, winfp]:
+                corr_eigvals_(acm)
+            w0p = w0p._data
+            winf = winf._data
+            w0 = w0._data
+            winfp = winfp._data
 
 
 class PURE_MOD_ISI_ACW(SPL_ACW):
@@ -586,7 +634,9 @@ class ACInterpolator:
     def params(self):
         return self._acw.params
 
-    def __call__(self, w_list):
+    def __call__(self, w_list, occs=None):
+        if occs is None:
+            occs = np.ones(w_list[0].shape[0])
         if self.mode == "E":
             w_list = [np.diag(w) for w in w_list]
         else:
@@ -595,12 +645,15 @@ class ACInterpolator:
         if self._acw.analytical_result is not None:
             return -1 * self._acw.analytical_result
         if self.mode == "E":
-            return -(self.dalpha * self._acw(self.alphas[:, None])).sum()
+            res = -(self.dalpha * self._acw(self.alphas[:, None])).sum(0)
+            return res.dot(occs)
         else:
             energy = 0
             for alpha in self.alphas:
                 acterm = self._acw(alpha).get_data_view()
-                energy -= self.dalpha * np.trace(acterm)
+                #energy -= self.dalpha * np.diag(acterm).dot(occs)
+                energy -= self.dalpha * np.diag(acterm).real#.dot(occs)
+            energy = energy.dot(occs)
             return energy
 
 

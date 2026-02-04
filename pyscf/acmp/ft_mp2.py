@@ -26,11 +26,13 @@ from pyscf import __config__
 from pyscf.mp.mp2 import MP2, MP2Base, _ChemistsERIs, _mem_usage, _ao2mo_ovov
 from pyscf import ao2mo
 from pyscf.scf.addons import _smearing_optimize, _fermi_smearing_occ
+from pyscf.acmp.ac_mp2 import ACMP_PAIRED, concatenate_w, ACMP2
 
 WITH_T2 = getattr(__config__, 'mp_mp2_with_t2', True)
 
 
-def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
+def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
+              return_osmi=False, with_singles=True):
     if mo_energy is not None or mo_coeff is not None:
         # For backward compatibility.  In pyscf-1.4 or earlier, mp.frozen is
         # not supported when mo_energy or mo_coeff is given.
@@ -56,12 +58,11 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     dvdeu = dvdeu[:nocc,-nvir:]
     v1ia2 = v1ia * v1ia.conj()
 
-    #ediff = mo_energy - mu
-    #nn_all = numpy.exp(0.5 * mp.beta * ediff)
-    #dn_all = dn_all + numpy.exp(0.5 * mp.beta * ediff)
-    #dn_occ = 1.0 / dn_all[:nocc]
-    #dn_vir = 1.0 / dn_all[-nvir:]
     dn_ia = occs[:nocc, None] * (1 - occs[None, -nvir:])
+    if return_osmi:
+        dn0_ia = numpy.ones_like(occs[:nocc, None]) * (1 - occs[None, -nvir:])
+    else:
+        dn0_ia = dn_ia
 
     anom_ia = mo_energy[None, -nvir:] * occs[None, -nvir:]
     anom_ia = anom_ia - mo_energy[:nocc,None] * (1 - occs[:nocc, None])
@@ -78,6 +79,11 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
     inve[numpy.abs(inve) < 1e-10] = -2 / mp.beta
     inve[:] = 1.0 / inve
 
+    if return_osmi:
+        w_list = [numpy.zeros((nocc, nocc)) for _ in range(mp.get_pt_list_size())]
+        if mp.ensemble is not None:
+            err = "OSMI only supports ensemble=None"
+            raise ValueError(err)
     if mp.ensemble is None:
         e1 = (2 * inve * v1ia2 * dn_ia).sum()
         n1 = 0
@@ -111,10 +117,30 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
         t2 = None
 
     emp2_ss = emp2_os = 0
-    small_gap = 1e-9
+    small_gap = 1e-10
     n0_count = 0
     nval_count = n1
     dnval_count = n2
+
+    def _get_ei_helper(gap):
+        cond = gap < 0
+        cond2 = numpy.abs(gap) > small_gap
+        expei = numpy.exp(-mp.beta * numpy.abs(gap))
+        ei = numpy.empty_like(gap)
+        ei[:] = -0.5 * mp.beta
+        ei[cond2] = 1.0 / gap[cond2]
+        expei[:] = numpy.where(
+            cond,
+            expei * (1 - expei) / (expei * expei + 1),
+            (expei - 1) / (1 + expei * expei)
+        )
+        ei[cond2] += (
+            (1.0 / mp.beta)
+            * (2 + mp.beta**2 * gap * gap) * expei
+            / (gap * gap)
+        )[cond2]
+        return ei
+
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -127,15 +153,14 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
         dnval_count += 2 * mp.beta * occs[i] * (1 - occs[i])
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
-        
-        #ei[numpy.abs(ei) < small_gap] = small_gap
-        #ei = (1 - numpy.exp(0.5 * mp.beta * ei)) / ei
-        #ei *= lib.einsum('jb,a->jba', dn_ia, dn_ia[i])
-        #t2i = gi.conj() * ei
-        
+
         if mp.ensemble is None:
-            ei[numpy.abs(ei) < small_gap] = -2 / mp.beta
-            ei[:] = lib.einsum('jb,a->jba', dn_ia, dn_ia[i]) / ei
+            if not return_osmi:
+                ei[numpy.abs(ei) < small_gap] = -2 / mp.beta
+                ei[:] = lib.einsum('jb,a->jba', dn_ia, dn_ia[i]) / ei
+            else:
+                ei = _get_ei_helper(ei)
+                ei[:] *= lib.einsum('jb,a->jba', dn0_ia, dn_ia[i])
         elif mp.ensemble in ["gc", "c_scf"]:
             cond = numpy.abs(ei) < small_gap
             ai = lib.direct_sum('jb+a->jba', anom_ia, anom_ia[i])
@@ -163,21 +188,25 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None):
             raise NotImplementedError
         else:
             raise ValueError("Unsupported thermal ensemble")
-        t2i = gi.conj() * ei
 
-        edi = numpy.einsum('jab,jab', t2i, gi) * 2
-        exi = -numpy.einsum('jab,jba', t2i, gi)
-        emp2_ss += edi*0.5 + exi
-        emp2_os += edi*0.5
+        if return_osmi:
+            mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED, invert_ei=False)
+        else:
+            t2i = gi.conj() * ei
+            edi = numpy.einsum('jab,jab', t2i, gi) * 2
+            exi = -numpy.einsum('jab,jba', t2i, gi)
+            emp2_ss += edi*0.5 + exi
+            emp2_os += edi*0.5
         if with_t2:
             t2[i] = t2i
 
-    # print("NVAL", nval_count, n0_count, nval_count + n0_count, dnval_count)
-    emp2_ss = emp2_ss.real + e1
-    emp2_os = emp2_os.real
-    emp2 = lib.tag_array(emp2_ss+emp2_os, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
-
-    return emp2.real, nval_count + n0_count, dnval_count
+    if return_osmi:
+        return w_list, occs[:nocc]
+    else:
+        emp2_ss = emp2_ss.real + e1
+        emp2_os = emp2_os.real
+        emp2 = lib.tag_array(emp2_ss+emp2_os, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
+        return emp2.real, nval_count + n0_count, dnval_count
 
 
 def _occ_helper(x, order):
@@ -259,7 +288,7 @@ class FTMP2Mixin:
              "ensemble", "max_mu_steps"}
 
     def __init__(self, beta=1, mu_algo="mu0", mu0=None,
-                 occ_tol=1e-9, mu_tol=1e-6, ensemble=None):
+                 occ_tol=0, mu_tol=1e-6, ensemble=None):
         """
         beta (float): 1 / (k_B * T) in atomic units. Default is equivalent to
             a temperature of ~316 K.
@@ -353,6 +382,8 @@ class FTMP2Mixin:
         vhf3 = mo_coeff.conj().T.dot(vhf3).dot(mo_coeff)
         return vhf1, vhf2, vhf3
 
+    gc_kernel = gc_kernel
+
     def kernel(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         '''
         Args:
@@ -385,8 +416,7 @@ class FTMP2Mixin:
         if self._scf.converged:
             if self.mu_algo != "mu0":
                 raise NotImplementedError
-            self.e_corr, n, dn = gc_kernel(
-                self,
+            self.e_corr, n, dn = self.gc_kernel(
                 mo_energy=mo_energy,
                 mo_coeff=mo_coeff,
                 eris=eris,
@@ -396,8 +426,7 @@ class FTMP2Mixin:
                 delta = n - get_correct_nval(self)
                 for step in range(self.max_mu_steps):
                     mu = mu - delta / dn
-                    self.e_corr, n, dn = gc_kernel(
-                        self,
+                    self.e_corr, n, dn = self.gc_kernel(
                         mo_energy=mo_energy,
                         mo_coeff=mo_coeff,
                         eris=eris,
@@ -463,13 +492,10 @@ class FTMP2(FTMP2Mixin, MP2Base):
     '''
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
                  beta=20, mu_algo="mu0", mu0=None,
-                 occ_tol=1e-7, mu_tol=1e-6):
+                 occ_tol=0, mu_tol=1e-6, ensemble=None):
         MP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
-        FTMP2Mixin.__init__(self, beta, mu_algo, mu0, occ_tol, mu_tol)
-
-    def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
-        #return gc_kernel(self, mo_energy, mo_coeff, eris, with_t2)
-        raise NotImplementedError
+        FTMP2Mixin.__init__(self, beta, mu_algo, mu0, occ_tol, mu_tol,
+                            ensemble)
 
     def _finalize(self):
         '''Hook for dumping results and clearing up the object.'''
@@ -482,6 +508,10 @@ class FTMP2(FTMP2Mixin, MP2Base):
         log.info('E_corr(same-spin) = %.15g', self.e_corr_ss)
         log.info('E_corr(oppo-spin) = %.15g', self.e_corr_os)
         return self
+
+    def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
+        #return gc_kernel(self, mo_energy, mo_coeff, eris, with_t2)
+        raise NotImplementedError
 
     def ao2mo(self, mo_coeff=None, mu=None):
         return _make_eris(self, mo_coeff, mu=mu, verbose=self.verbose)
@@ -496,6 +526,62 @@ class FTMP2(FTMP2Mixin, MP2Base):
 
 
 FTRMP2 = FTMP2
+
+class FTACMP2(FTMP2Mixin, ACMP2):
+    def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None,
+                 beta=20, mu_algo="mu0", mu0=None,
+                 occ_tol=0, mu_tol=1e-6):
+        ACMP2.__init__(self, mf, frozen, mo_coeff, mo_occ)
+        FTMP2Mixin.__init__(self, beta, mu_algo, mu0, occ_tol, mu_tol)
+
+    def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
+                  with_singles=True):
+        if eris is None:
+            eris = mp.ao2mo(mo_coeff)
+        w_list, occs = gc_kernel(mp, mo_energy, mo_coeff, eris, mu,
+                                 return_osmi=True, with_singles=False)
+        if mo_coeff is None:
+            mo_coeff = eris.mo_coeff[:, :eris.nocc]
+
+        wlist_df = mp.get_acmp_df_wlist(mo_coeff)
+        w_list = concatenate_w(w_list, wlist_df)
+        lnocc = numpy.log(numpy.clip(occs, 1e-30, 1))
+        wt_mat = numpy.exp(-(lnocc - lnocc[:, None])**2)
+        w_list = [((w + w.T) * 0.5 * wt_mat) for w in w_list]
+        energy = 2 * mp.ac_interpolator(w_list, occs=occs)
+
+        # TODO shouldn't set these to misleading values
+        edi = energy
+        exi = 0.0
+        emp2_ss = edi * 0.5 + exi
+        emp2_os = edi * 0.5
+        emp2 = lib.tag_array(energy, e_corr_ss=emp2_ss, e_corr_os=emp2_os)
+        mp.acmp_wlist = w_list
+
+        return emp2.real, None, None
+
+    def _finalize(self):
+        '''Hook for dumping results and clearing up the object.'''
+        log = logger.new_logger(self)
+        log.note('FT-AC-MP2 with si_limit = %s', self.si_limit)
+        log.note('E(%s) = %.15g  E_corr = %.15g',
+                 self.__class__.__name__, self.e_tot, self.e_corr)
+        return self
+
+    def init_amps(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
+        #return gc_kernel(self, mo_energy, mo_coeff, eris, with_t2)
+        raise NotImplementedError
+
+    def ao2mo(self, mo_coeff=None, mu=None):
+        return _make_eris(self, mo_coeff, mu=mu, verbose=self.verbose)
+
+    def density_fit(self, auxbasis=None, with_df=None):
+        raise NotImplementedError
+
+    def nuc_grad_method(self):
+        raise NotImplementedError
+
+    get_nocc_nvir_nval = get_nocc_nvir_nval
 
 
 def _make_eris(mp, mo_coeff=None, ao2mofn=None, mu=None, verbose=None):
@@ -541,8 +627,6 @@ def _make_eris(mp, mo_coeff=None, ao2mofn=None, mu=None, verbose=None):
         log.debug('transform (ia|jb) outcore')
         eris.feri = lib.H5TmpFile()
         eris.ovov = _ao2mo_ovov(mp, co, cv, eris.feri, max(2000, max_memory), log)
-
-    # print(eris.nocc, eris.nvir, co.shape, cv.shape, eris.ovov.shape)
 
     log.timer('Integral transformation', *time0)
     return eris

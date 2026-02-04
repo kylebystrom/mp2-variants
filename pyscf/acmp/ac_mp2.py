@@ -202,15 +202,19 @@ ACMP_CONTRACTTIONS4 = {
 }
 
 
-def add_to_w_list_(mp, w_list, gd, gx, ei, mode, wt=1.0):
+def add_to_w_list_(mp, w_list, gd, gx, ei, mode, wt=1.0,
+                   invert_ei=True):
     if gd.ndim == 3:
         assert gx.ndim == ei.ndim == 3
         contraction = ACMP_CONTRACTTIONS[mode]
     else:
         assert gd.ndim == gx.ndim == ei.ndim == 4
         contraction = ACMP_CONTRACTTIONS4[mode]
-    if len(w_list) > 0:
+    if invert_ei:
         inv_ei = 1.0 / ei
+    else:
+        inv_ei = ei
+    if len(w_list) > 0:
         t2i = numpy.conj(gd * inv_ei)
         contraction(w_list[0], t2i, gd, gx, wt)
     if len(w_list) > 1:
