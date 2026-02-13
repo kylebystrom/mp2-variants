@@ -1,7 +1,8 @@
 from pyscf.acmp.ac_interpolators import BasicACW, MOD_ISI_ACW, PURE_MOD_ISI_ACW
 from pyscf import gto, scf, dft
 from pyscf.acmp.ac_mp2 import ACMP2
-from pyscf.acmp.ft_mp2 import FTMP2, FTACMP2
+from pyscf.mp.mp2 import MP2
+from pyscf.acmp.ft_mp2 import make_ftmp2
 from pyscf.acmp import mp2_numint as funcs
 from pyscf.acmp.ac_interpolators import get_interpolator
 from pyscf.scf.addons import smearing
@@ -37,22 +38,29 @@ ftmf = smearing(dft.RKS(mol, xc="PBE"), sigma=1.0 / beta)
 ftmf.kernel()
 print("MF ENS", ftmf.e_tot, ftmf.e_free, ftmf.e_zero)
 
-mymp = FTACMP2(ftmf, beta=beta)
+mymp = make_ftmp2(ACMP2(ftmf), beta=beta)
 mymp.ac_interpolator = interpolator
 mymp.df_codes = df_codes
 mymp.si_limit = silim
 mymp.kernel()
 
-mymp = FTACMP2(ftmf, beta=beta, ensemble="fd")
+mymp = make_ftmp2(ACMP2(ftmf), beta=beta,
+                  particle_fix=None,
+                  with_singles=False,
+                  ecorr_method="fd")
 mymp.ac_interpolator = interpolator
 mymp.df_codes = df_codes
 mymp.si_limit = silim
 mymp.kernel()
 
-mymp = FTMP2(ftmf, beta=beta, ensemble="gc")
+mymp = make_ftmp2(MP2(ftmf), beta=beta,
+                  particle_fix=None,
+                  ecorr_method="analytical")
 mymp.kernel()
 
-mymp = FTMP2(ftmf, beta=beta, ensemble="fd")
+mymp = make_ftmp2(MP2(ftmf), beta=beta,
+                  particle_fix=None,
+                  ecorr_method="fd")
 mymp.kernel()
 exit()
 f0 = mymp.f_corr
