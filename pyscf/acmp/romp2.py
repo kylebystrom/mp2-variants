@@ -43,7 +43,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     mo_energy, dfock, transforms, mo_coeff = mp._get_coefs()
     mo_energy = None
     mo_coeff = None
-    
+
     if eris is None:
         eris = mp.ao2mo(mo_coeff)
 
@@ -56,7 +56,7 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
     mo_ea, mo_eb = mo_energy
     eia_a = mo_ea[:nocca,None] - mo_ea[None,nocca:]
     eia_b = mo_eb[:noccb,None] - mo_eb[None,noccb:]
-    
+
     e_singles = numpy.einsum("ia,ia->", dfock[0], dfock[0].conj() / eia_a)
     e_singles += numpy.einsum("ia,ia->", dfock[1], dfock[1].conj() / eia_b)
 
@@ -214,7 +214,6 @@ class ROMP2(ump2.UMP2):
             [ot_a, ot_b, vt_a, vt_b],
             self.mo_coeff,
         )
-
 
     def kernel(self, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2):
         '''

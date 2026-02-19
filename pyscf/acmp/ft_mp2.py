@@ -136,7 +136,7 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         "opt": ["gp1", "gp2", "n1", "n2", "dn0", "dn1", "dn2"],
         "all": ["gp1", "gp2", "n1", "n2", "e1", "e2"],
         "mu": ["mu1", "mu2", "n1", "n2", "dn0", "dn1", "dn2"],
-        "osmi": ["gp1", "w_list"],
+        "osmi": ["gp1", "gp2", "w_list"],
     }
     results_keys = results_keys + extra_keys[task]
 
@@ -164,12 +164,17 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
 
     if mo_energy is None:
         mo_energy = eris.mo_energy
-    
+
+    if False: # mu1 is not None:
+        dmoe = mo_energy - mu
+    else:
+        dmoe = mo_energy
+
     occs = _fermi_smearing_occ(mu, mo_energy, 1.0 / beta)
 
     nocc = eris.nocc
     nvir = eris.nvir
-    eia = mo_energy[:nocc,None] - mo_energy[None,-nvir:]
+    eia = mo_energy[:nocc, None] - mo_energy[None, -nvir:]
 
     clipped_occs = numpy.clip(occs, 1e-200, 1)
     clipped_1occs = numpy.clip(1 - occs, 1e-200, 1)
@@ -178,11 +183,25 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
     f0 += clipped_1occs * numpy.log(clipped_1occs)
     f0 = e0 + 2 / beta * f0.sum()
     n0 = 2 * numpy.sum(occs)
+    results = {"e0": e0, "f0": f0, "n0": n0, "occs": occs, "mu0": mu}
     if "dn0" in results_keys:
         results["dn0"] = 2 * beta * numpy.sum(occs * (1 - occs))
     if task == "mu":
         ddn0 = 2 * beta**2 * numpy.sum(occs * (1 - occs) * (1 - 2 * occs))
-    results = {"e0": e0, "f0": f0, "n0": n0, "occs": occs, "mu0": mu}
+
+    if with_singles:
+        v1ia = v1[:nocc, -nvir:]
+        v1ia2 = v1ia * v1ia.conj()
+
+    if task in ["opt", "all", "mu"]:
+        dvdu, d2vdu2, dvdeu = mp._get_dv1(
+            dmoe, eris.mo_coeff, occs, beta=beta
+        )
+        dvdu_ii = numpy.diag(dvdu)[:nocc]
+        dvdu = dvdu[:nocc, -nvir:]
+        d2vdu2 = d2vdu2[:nocc, -nvir:]
+        dvdeu = dvdeu[:nocc, -nvir:]
+
     v1ii = numpy.diag(v1)[:nocc]
     dndu = beta * occs[:nocc] * (1 - occs[:nocc])
     if "gp1" in results_keys:
@@ -203,18 +222,6 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         #if mu1 is not None:
         #    raise NotImplementedError
 
-    if with_singles:
-        v1ia = v1[:nocc,-nvir:]
-        v1ia2 = v1ia * v1ia.conj()
-
-    if task in ["opt", "all", "mu"]:
-        dvdu, d2vdu2, dvdeu = mp._get_dv1(mo_energy, eris.mo_coeff, occs, beta=beta)
-        dvdu_ii = numpy.diag(dvdu)[:nocc]
-        dvdu = dvdu[:nocc,-nvir:]
-        d2vdu2 = d2vdu2[:nocc,-nvir:]
-        dvdeu_ii = numpy.diag(dvdeu)[:nocc]
-        dvdeu = dvdeu[:nocc,-nvir:]
-
     dn_ia = occs[:nocc, None] * (1 - occs[None, -nvir:])
     if task == "osmi":
         dn0_ia = numpy.ones_like(occs[:nocc, None]) * (1 - occs[None, -nvir:])
@@ -223,8 +230,8 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
 
     if task == "all":
         # Multiplier for the anomalous energy term
-        emul_ia = mo_energy[None, -nvir:] * occs[None, -nvir:]
-        emul_ia = emul_ia - mo_energy[:nocc,None] * (1 - occs[:nocc, None])
+        emul_ia = dmoe[None, -nvir:] * occs[None, -nvir:]
+        emul_ia = emul_ia - dmoe[:nocc, None] * (1 - occs[:nocc, None])
         emul_ia[:] *= beta
 
     if task in ["opt", "all", "mu"]:
@@ -232,7 +239,7 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         nterm_ia = -occs[None, -nvir:] + (1 - occs[:nocc, None])
         nterm_ia[:] *= beta
 
-    if task == "opt":
+    if task in ["opt", "mu"]:
         # Multiplier for the derivative of the anomalous particle number term 
         dnterm_ia = occs[None, -nvir:] * (1 - occs[None, -nvir:])
         dnterm_ia = dnterm_ia + (1 - occs[:nocc, None]) * occs[:nocc, None]
@@ -252,9 +259,9 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
                 dexpei = numpy.where(
                     cond,
                     (tmp1 * expei * (1 - 2 * expei - expei * expei)
-                    + tmp2 * expei * (1 - expei) * (1 + expei * expei)),
+                     + tmp2 * expei * (1 - expei) * (1 + expei * expei)),
                     (tmp1 * expei * (expei * expei - 2 * expei - 1)
-                    + tmp2 * (expei - 1) * (1 + expei * expei)),
+                     + tmp2 * (expei - 1) * (1 + expei * expei)),
                 ) / (1 + expei * expei)**2
             expei[:] = numpy.where(
                 cond,
@@ -284,13 +291,6 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
                 return ei, dei
             return ei
 
-    #fancy = True
-    #if fancy:
-    #    inve, dinve = _get_ei_helper(eia, True)
-    #else:
-    #    inve = eia.copy()
-    #    inve[numpy.abs(inve) < 1e-10] = -2 / beta
-    #    inve[:] = 1.0 / inve
     inve, dinve = _get_ei_helper(eia, True)
 
     if task == "osmi":
@@ -298,11 +298,13 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
 
     if with_singles:
         # factors of 2 for spin
-        if "gp2" in results_keys:
-            results["gp2"] = (2 * inve * v1ia2 * dn_ia).sum()
         if "w_list" in results_keys:
-            w_list[0][:] = lib.einsum("ia,ja->ij", inve * dn0_ia * v1ia.conj(), v1ia)
+            results["gp2"] = 0.0
+            tmp = numpy.sqrt(-inve * dn0_ia) * v1ia
+            w_list[0][:] = -lib.einsum("ia,ja->ij", tmp, tmp.conj())
             w_list[0][:] = w_list[0] + w_list[0].T.conj()
+        elif "gp2" in results_keys:
+            results["gp2"] = (2 * inve * v1ia2 * dn_ia).sum()
         if "e2" in results_keys:
             e2 = (2 * inve * v1ia2 * dn_ia * (1 + emul_ia)).sum()
             e2 += (2 * dinve * v1ia2 * dn_ia).sum()
@@ -320,13 +322,13 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
             results["dn2"] = n2
     else:
         if "gp2" in results_keys:
-            results["gp2"] = 0
+            results["gp2"] = 0.0
         if "e2" in results_keys:
-            results["e2"] = 0
+            results["e2"] = 0.0
         if "n2" in results_keys:
-            results["n2"] = 0
+            results["n2"] = 0.0
         if "dn2" in results_keys:
-            results["dn2"] = 0
+            results["dn2"] = 0.0
     if mu2 is not None:
         if "gp2" in results_keys:
             # factor of 2 for nelec, factor of 1 for second deriv taylor
@@ -338,12 +340,12 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         if "e2" in results_keys:
             results["e2"] += 2 * mu1 * (2 * v1ii.real * dndu).sum()
             results["e2"] -= 2 * mu1**2 * dndu.sum()
-            dndudb = dndu * mo_energy[:nocc] * (1 - 2 * occs[:nocc])
+            dndudb = dndu * dmoe[:nocc] * (1 - 2 * occs[:nocc])
             results["e2"] -= 2 * beta * mu1 * (v1ii.real * dndudb).sum()
-            results["e2"] -= 2 * (beta * mu1 * dndu * dvdeu_ii.real).sum()
+            results["e2"] -= 2 * (mu1 * dndu * dmoe[:nocc] * dvdu_ii.real).sum()
             # factor or 2 and factor 1/2 cancel again here
             results["e2"] += beta * mu1**2 * dndudb.sum()
-            results["e2"] += 2 * mu2 * (mo_energy[:nocc] * dndu).sum()
+            results["e2"] += 2 * mu2 * (dmoe[:nocc] * dndu).sum()
 
     e2_ss = e2_os = 0
     gp2_ss = gp2_os = 0
@@ -356,7 +358,7 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
             gi = eris.ovov[i]
         else:
             gi = numpy.asarray(eris.ovov[i*nvir:(i+1)*nvir])
-        gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
+        gi = gi.reshape(nvir, nocc, nvir).transpose(1, 0, 2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
 
         if task == "osmi":
@@ -429,9 +431,9 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         # in the zero-T limit.
         results["mu1"] = -1 * results["n1"] / (results["dn0"] + 1e-16)
         results["mu2"] = results["n2"]
-        results["mu2"] += results["mu1"]**2 * ddn0
+        results["mu2"] += 0.5 * results["mu1"]**2 * ddn0
         results["mu2"] += results["mu1"] * results["dn1"]
-        results["mu2"] *= -1 / results["dn0"]
+        results["mu2"] *= -1 / (results["dn0"] + 1e-16)
 
     return results
 
@@ -515,6 +517,10 @@ class FTMP2Mixin:
                     perturbation strength and solve for the chemical
                     potential that preserves the electron number
                     to second order.
+                "dv": Expand the effective potential in order of the
+                    perturbation strength and solve for the effective
+                    potential that preserves the electron number
+                    to second order.
                 "iter": Iteratively solve for the chemical potential for
                     which the expectation value of the particle number
                     at the PT2 level is equal to the number of electrons
@@ -547,7 +553,7 @@ class FTMP2Mixin:
                     correlation energy within the grand canonical formalism.
                 "finite_difference": Same as analytical, but perform the
                     derivatives of the first and second order terms using
-                    a difference stencil.
+                    a finite difference stencil.
                 "1ana_2fd": (TODO NOT IMPLEMENTED)
                     Same as analytical, but perform the derivatives
                     of Omega^{(1)} analytically and the derivatives
@@ -555,13 +561,12 @@ class FTMP2Mixin:
         with_singles (bool): Whether to include single-excitation contributions
             in the second-order perturbation terms.
         """
-        print("HI", mymp, mymp._nmo)
         self.__dict__.update(mymp.__dict__)
         self.beta = beta
         self.mu0 = mu0
         self.occ_tol = occ_tol
         self.mu_tol = mu_tol
-        if particle_fix not in [None, "pt", "iter"]:
+        if particle_fix not in [None, "pt", "iter", "iter_fd"]:
             raise ValueError("Unsupported particle_fix={}".format(particle_fix))
         self.particle_fix = particle_fix
         if ecorr_method not in ["zeroth_order", "first_order", "analytical",
@@ -576,23 +581,10 @@ class FTMP2Mixin:
     @property
     def nocc(self):
         return self._nocc
+
     @nocc.setter
     def nocc(self, n):
         raise ValueError("Cannot set nocc for FT-MP2")
-
-    def _get_e0(self, mo_energy, mo_coeff, ac_occ):
-        ac_occ = 2 * ac_occ
-        if self.frozen is None:
-            mo_occ = ac_occ.copy()
-        elif isinstance(self.frozen, (int, numpy.integer)):
-            mo_occ = self._scf.mo_occ.copy()
-            mo_occ[self.frozen:] = ac_occ
-        elif hasattr(self.frozen, '__len__'):
-            mask = self.get_frozen_mask()
-            mo_occ = self._scf.mo_occ.copy()
-            mo_occ[mask] = ac_occ
-        else:
-            raise NotImplementedError
 
     def _get_v1(self, mo_energy, mo_coeff, ac_occ):
         """
@@ -674,7 +666,7 @@ class FTMP2Mixin:
     @property
     def e_free(self):
         return self._f_tot
-    
+
     @property
     def e_zero(self):
         return 0.5 * (self._e_tot + self._f_tot)
@@ -682,7 +674,7 @@ class FTMP2Mixin:
     @property
     def emp2_scs(self):
         raise NotImplementedError
-    
+
     @property
     def e_tot_scs(self):
         raise NotImplementedError
@@ -739,7 +731,6 @@ class FTMP2Mixin:
             # is detected.
             use_fd = (self.particle_fix == "iter_fd")
             for step in range(self.max_mu_steps):
-                mu = mu - delta / dn
                 if use_fd:
                     mu_delta = max(1e-3 / self.beta, 1e-7)
                     results = _call_kernel(mu, self.beta, "gp")
@@ -767,12 +758,11 @@ class FTMP2Mixin:
             # keep chemical potential fixed as the initial mu
             assert self.particle_fix is None
             results = {}
-        
+
         if self.ecorr_method == "zeroth_order":
             if "gp1" not in results or "gp2" not in results:
                 results.update(_call_kernel(mu, self.beta, "gp"))
             self._e_tot = results["e0"] + results["gp1"] + results["gp2"]
-            print("ENS", results["e0"], results["gp1"], results["gp2"], self._e_tot)
             # add zeroth-order entropic term to get free energy
             self._f_tot = self._e_tot + results["f0"] - results["e0"]
         elif self.ecorr_method == "first_order":
@@ -783,7 +773,7 @@ class FTMP2Mixin:
             if isinstance(mu, tuple):
                 # 1st and 2nd-order mu * N contribution
                 # N is fixed to n0 to second order
-                self._f_fot += (results["mu1"] + results["mu2"]) * results["n0"]
+                self._f_tot += (results["mu1"] + results["mu2"]) * results["n0"]
             else:
                 # 1st and 2nd-order mu * N contribution
                 # mu is fixed, n1 and n2 contribute to the expansion
@@ -796,35 +786,44 @@ class FTMP2Mixin:
             if isinstance(mu, tuple):
                 # particle number is fixed by mu is not
                 nelec = results["n0"]
-                mu_term = results["mu1"] + results["mu2"]
+                mu1_term = nelec * results["mu1"]
+                mu2_term = nelec * results["mu2"]
             else:
                 # Differentiate GP wrt mu to get particle number term
-                mu_delta = max(1e-3 / self.beta, 1e-7)
+                mu_delta = max(1e-4 / self.beta, 1e-7)
+                mu_delta = 1e-3 / self.beta
                 res = _call_kernel(mu + 0.5 * mu_delta, self.beta, "gp")
-                ep_mu = res["gp1"] + res["gp2"]
+                ep1_mu = res["gp1"]
+                ep2_mu = res["gp2"]
                 res = _call_kernel(mu - 0.5 * mu_delta, self.beta, "gp")
-                em_mu = res["gp1"] + res["gp2"]
-                nelec = (em_mu - ep_mu) / mu_delta
-                mu_term = mu
+                em1_mu = res["gp1"]
+                em2_mu = res["gp2"]
+                nelec1 = (em1_mu - ep1_mu) / mu_delta
+                nelec2 = (em2_mu - ep2_mu) / mu_delta
+                mu1_term = nelec1 * mu
+                mu2_term = nelec2 * mu
 
-            # Differentiate GP wrt beta to get entropy term
+            # Differentiate GP wrt beta to get entropy term.
             # We compute this derivative with mu fixed, so if
             # particle_fix="pt", we still get the right derivative
-            # for computing the entropy term
+            # for computing the entropy term.
             beta_delta = self.beta * 0.00001
             res = _call_kernel(mu, self.beta + 0.5 * beta_delta, "gp")
-            ep_beta = res["gp1"] + res["gp2"]
+            ep1_beta = res["gp1"]
+            ep2_beta = res["gp2"]
             res = _call_kernel(mu, self.beta - 0.5 * beta_delta, "gp")
-            em_beta = res["gp1"] + res["gp2"]
-            entropy = (ep_beta - em_beta) / beta_delta
+            em1_beta = res["gp1"]
+            em2_beta = res["gp2"]
+            s1_term = self.beta * (ep1_beta - em1_beta) / beta_delta
+            s2_term = self.beta * (ep2_beta - em2_beta) / beta_delta
+
+            results["e1"] = results["gp1"] + mu1_term + s1_term
+            results["e2"] = results["gp2"] + mu2_term + s2_term
 
             # Set the energies from the finite difference terms
-            self._e_tot = (
-                results["e0"] + mu_term * nelec + self.beta * entropy
-                + results["gp1"] + results["gp2"]
-            )
+            self._e_tot = results["e0"] + results["e1"] + results["e2"]
             self._f_tot = (
-                results["f0"] + mu_term * nelec
+                results["f0"] + mu1_term + mu2_term
                 + results["gp1"] + results["gp2"]
             )
         elif self.ecorr_method == "1ana_2fd":
@@ -838,16 +837,19 @@ class FTMP2Mixin:
 
         log.timer(self.__class__.__name__, *cput0)
 
+        self._results = results
         self._finalize()
-        return self.e_corr, results
+        return self.e_corr, self.results
 
     get_nocc_nvir_nval = get_nocc_nvir_nval
-    
+
     def _init_smearing(self):
         assert self._scf.converged
         nelec = get_correct_nval(self)
         mu, occs = _smearing_optimize(_fermi_smearing_occ, self._scf.mo_energy,
                                       nelec // 2, 1.0 / self.beta)
+        if isinstance(mu, float):
+            return mu
         return mu.item()
 
     def get_e_hf(mp, mo_coeff=None):
@@ -886,7 +888,7 @@ class FTMP2Mixin:
         '''
         dm = (mo_coeff*mo_occ).dot(mo_coeff.conj().T)
         return dm
-    
+
     def _finalize(self):
         '''Hook for dumping results and clearing up the object.'''
         log = logger.new_logger(self)
@@ -918,7 +920,7 @@ class FTACMP2Mixin(FTMP2Mixin):
     def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
                   task="gp", with_singles=True, beta=None,
                   smooth_edep=True):
-        if task not in ["mu", "gp", "osmi"]:
+        if task not in ["mu", "gp", "osmi", "opt"]:
             raise ValueError("Unsupported kernel task for FT-ACMP2")
         if task == "gp":
             task = "osmi"
@@ -937,6 +939,9 @@ class FTACMP2Mixin(FTMP2Mixin):
         if task == "mu":
             kwargs["task"] = "mu"
             return gc_kernel(mp, **kwargs)
+        elif task == "opt":
+            kwargs["task"] = "opt"
+            return gc_kernel(mp, **kwargs)
         else:
             kwargs["task"] = "osmi"
             results = gc_kernel(mp, **kwargs)
@@ -951,7 +956,8 @@ class FTACMP2Mixin(FTMP2Mixin):
         lnocc = numpy.log(numpy.clip(occs, 1e-16, 1))
         wt_mat = numpy.exp(-0.25 * (lnocc - lnocc[:, None])**2)
         w_list = [((w + w.T) * 0.5 * wt_mat) for w in w_list]
-        results["gp2"] = 2 * mp.ac_interpolator(w_list, occs=occs)
+        print(results["gp2"], 2 * mp.ac_interpolator(w_list, occs=occs))
+        results["gp2"] += 2 * mp.ac_interpolator(w_list, occs=occs)
         mp.acmp_wlist = w_list
 
         # results should contain gp1 and gp2 as predicted by OSMI

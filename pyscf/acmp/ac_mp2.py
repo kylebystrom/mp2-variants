@@ -92,7 +92,7 @@ def concatenate_w(wlist_pt, wlist_df):
     return w_list
 
 
-def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
+def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2, with_singles):
     if mo_energy is not None or mo_coeff is not None:
         # For backward compatibility.  In pyscf-1.4 or earlier, mp.frozen is
         # not supported when mo_energy or mo_coeff is given.
@@ -118,6 +118,16 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
         t2 = None
 
     w_list = [numpy.zeros((nocc, nocc)) for _ in range(mp.get_pt_list_size())]
+
+    if with_singles:
+        # NOTE singles only computed for the standard W0'
+        dfock = mp._get_singles_vmat()
+        print(dfock.shape, mp._scf.mol.nao_nr())
+        wtmp = numpy.einsum("ia,ja->ij", dfock, dfock.conj() / eia)
+        wtmp = wtmp + wtmp.conj().T
+        w_list[0] += wtmp
+        print("SINGLES", numpy.trace(w_list[0]))
+
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -129,6 +139,7 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
         mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED)
+    print("DOUBLES", numpy.trace(w_list[0]))
 
     return w_list, t2
 
@@ -136,7 +147,8 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
     if eris is None:
         eris = mp.ao2mo(mo_coeff)
-    w_list, t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
+    w_list, t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2,
+                               mp.with_singles)
     if mo_coeff is None:
         mo_coeff = eris.mo_coeff
 
@@ -236,9 +248,31 @@ class ACMP2(MP2):
         self.functional_list = []
         self.df_codes = []
         self.acmp_wlist = None
+        self.with_singles = False
 
     def get_pt_list_size(self):
         return 1
+
+    def _get_singles_vmat(self):
+        mf = self._scf
+        if mf.istype("RKS"):
+            mf = mf.to_hf()
+        moidx = self.get_frozen_mask()
+        omo_coeff = mf.mo_coeff
+        occ = mf.mo_occ
+        assert numpy.logical_or(occ == 0, occ == 2).all()
+        is_occ = occ > 0
+        vir = numpy.logical_not(is_occ)
+        dm1 = mf.make_rdm1(
+            mo_coeff=omo_coeff,
+            mo_occ=occ,
+        )
+        fock = mf.get_hcore(self.mol) + mf.get_veff(self.mol, dm1)
+        dfock = _acmp_ao2mo(fock, omo_coeff)
+        occ_act = numpy.logical_and(moidx, is_occ)
+        vir_act = numpy.logical_and(moidx, vir)
+        dfock = dfock[occ_act][:, vir_act]
+        return dfock
 
     add_to_w_list_ = add_to_w_list_
 

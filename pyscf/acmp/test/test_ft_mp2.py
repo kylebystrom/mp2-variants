@@ -2,6 +2,7 @@ from pyscf.acmp.ac_interpolators import BasicACW, MOD_ISI_ACW, PURE_MOD_ISI_ACW
 from pyscf import gto, scf, dft
 from pyscf.acmp.ac_mp2 import ACMP2
 from pyscf.mp.mp2 import MP2
+from pyscf.acmp.pt2 import PT2
 from pyscf.acmp.ft_mp2 import make_ftmp2
 from pyscf.acmp import mp2_numint as funcs
 from pyscf.acmp.ac_interpolators import get_interpolator
@@ -15,13 +16,15 @@ class KnownValues(unittest.TestCase):
         # TODO split this into multiple tests
 
         # Make a simple molecule and zero-T PBE calculation
+        XC = "PBE"
         mol = gto.M(atom="H 0 0 0; F 0 0 1.1", basis="def2-tzvp")
-        mf = dft.RKS(mol, xc="PBE").newton()
+        # mol = gto.M(atom="H 0 0 0; F 0 0 0.9168", basis="sto-3g")
+        mf = dft.RKS(mol, xc=XC).newton()
         mf.kernel()
         mymp = make_ftmp2(MP2(mf), beta=10000)
         mymp.kernel()
 
-        df_codes = [] # [("GGA", funcs.gga_pch_winfp_v2)]
+        df_codes = []  # [("GGA", funcs.gga_pch_winfp_v2)]
         silim = ("GGA", funcs.gga_pch_winf_v2)
         acw = BasicACW()
         interpolator = get_interpolator(acw=acw, mode="M")
@@ -35,10 +38,14 @@ class KnownValues(unittest.TestCase):
 
         # Perform a high-temperature PBE calculation
         # beta = 1/T
+        # beta = 40.0
         beta = 40.0
-        ftmf = smearing(dft.RKS(mol, xc="PBE"), sigma=1.0 / beta)
+        # beta = 1 / 0.0316679
+        ftmf = smearing(dft.RKS(mol, xc=XC), sigma=1.0 / beta)
+        # ftmf = smearing(dft.RKS(mol, xc=XC), sigma=0.0000001)
+        # ftmf = dft.RKS(mol, xc=XC)
         ftmf.kernel()
-        print("MF ENS", ftmf.e_tot, ftmf.e_free, ftmf.e_zero)
+        # print("MF ENS", mf.e_tot, ftmf.e_tot, ftmf.e_free, ftmf.e_zero)
 
         mymp = make_ftmp2(ACMP2(ftmf), beta=beta,
                           particle_fix=None,
@@ -48,35 +55,86 @@ class KnownValues(unittest.TestCase):
         mymp.df_codes = df_codes
         mymp.si_limit = silim
         mymp.kernel()
-        assert_allclose(mymp.e_tot, -100.391027865593, atol=1e-8, rtol=0)
-        assert_allclose(mymp.e_corr, -0.38009583997081, atol=1e-8, rtol=0)
+        if XC == "PBE" and beta == 40:
+            assert_allclose(mymp.e_tot, -100.391027865593, atol=1e-8, rtol=0)
+            assert_allclose(mymp.e_corr, -0.38009583997081, atol=1e-8, rtol=0)
 
-        mymp = make_ftmp2(ACMP2(ftmf), beta=beta,
-                  particle_fix=None,
-                  with_singles=False,
-                  ecorr_method="finite_difference")
+        mymp = make_ftmp2(ACMP2(ftmf), beta=beta, particle_fix=None,
+                          with_singles=False, ecorr_method="finite_difference")
         mymp.ac_interpolator = interpolator
         mymp.df_codes = df_codes
         mymp.si_limit = silim
         mymp.kernel()
-        #assert_allclose(mymp.e_tot, -100.338659133308, atol=1e-8, rtol=0)
-        #assert_allclose(mymp.e_corr, -0.327727107685651, atol=1e-8, rtol=0)
+        assert_allclose(mymp.e_tot, -100.386074249698, atol=1e-8, rtol=0)
+        assert_allclose(mymp.e_corr, -0.375142224075233, atol=1e-8, rtol=0)
 
-        mymp = make_ftmp2(MP2(ftmf), beta=beta,
-                  particle_fix=None,
-                  ecorr_method="analytical")
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix=None,
+                          ecorr_method="analytical")
         mymp.kernel()
         ec = mymp.e_corr
-        #assert_allclose(mymp.e_tot, -100.173149236711, atol=1e-8, rtol=0)
-        #assert_allclose(mymp.e_corr, -0.162217211088837, atol=1e-8, rtol=0)
+        assert_allclose(mymp.e_tot, -100.173149236711, atol=1e-8, rtol=0)
+        assert_allclose(mymp.e_corr, -0.162217211088837, atol=1e-8, rtol=0)
 
-        mymp = make_ftmp2(MP2(ftmf), beta=beta,
-                  particle_fix=None,
-                  ecorr_method="finite_difference")
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix=None,
+                          ecorr_method="finite_difference")
         mymp.kernel()
         print(mymp.e_corr, ec)
         assert_allclose(mymp.e_corr, ec, atol=1e-6, rtol=0)
-        #assert_allclose(mymp.f_corr, ef, atol=1e-6, rtol=0)
+        # assert_allclose(mymp.f_corr, ef, atol=1e-6, rtol=0)
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="iter",
+                          ecorr_method="analytical")
+        mymp.kernel()
+
+        print(mymp.e_tot, mymp.e_corr)
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="iter_fd",
+                          ecorr_method="analytical")
+        mymp.kernel()
+
+        print(mymp.e_tot, mymp.e_corr)
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="pt",
+                          ecorr_method="finite_difference", cc_tol=0)
+        mymp.kernel()
+
+        print()
+        print("LOOK1", mymp.e_tot, mymp.e_free, mymp.e_corr,
+              mymp.results["e0"], mymp.results["e1"], mymp.results["e2"],
+              mymp.results["gp1"], mymp.results["gp2"],
+              mymp.results["mu1"], mymp.results["mu2"])
+        print()
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="pt",
+                          ecorr_method="analytical", occ_tol=0)
+        mymp.kernel()
+
+        print()
+        print("LOOK2", mymp.e_tot, mymp.e_free, mymp.e_corr,
+              mymp.results["e0"], mymp.results["e1"], mymp.results["e2"],
+              mymp.results["gp1"], mymp.results["gp2"],
+              mymp.results["mu1"], mymp.results["mu2"])
+        print(mymp.mu_opt)
+        print()
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix=None,
+                          ecorr_method="analytical")
+        mymp.kernel()
+        print(mymp.mu_opt)
+
+        print(mymp.e_tot, mymp.e_corr)
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix=None,
+                          ecorr_method="finite_difference")
+        mymp.kernel()
+
+        print(mymp.e_tot, mymp.e_corr)
+
+        mymp = make_ftmp2(MP2(ftmf), beta=1000, particle_fix=None,
+                          ecorr_method="finite_difference")
+        mymp.kernel()
+
+        print(mymp.e_tot, mymp.e_corr)
 
         if False:
             # NOTE this fd does not work currently because
@@ -109,6 +167,70 @@ class KnownValues(unittest.TestCase):
             print("FINAL ENS", e0, f0 + (f1-f2)/delta + mu*(f4-f3)/delta)
             assert_allclose(e0, f0 + (f1-f2)/delta + mu*(f4-f3)/delta,
                             rtol=0, atol=1e-6)
+
+    def test_ft_ac_pt2(self):
+        df_codes = []  # [("GGA", funcs.gga_pch_winfp_v2)]
+        silim = ("GGA", funcs.gga_pch_winf_v2)
+        acw = BasicACW()
+        interpolator = get_interpolator(acw=acw, mode="M")
+
+        beta = 100
+
+        # Make a simple molecule and zero-T PBE calculation
+        XC = "PBE"
+        mol = gto.M(atom="H 0 0 0; F 0 0 1.1", basis="def2-svp")
+        mf = dft.RKS(mol, xc=XC)
+        mf.kernel()
+        mymp = ACMP2(mf)
+        mymp.ac_interpolator = interpolator
+        mymp.df_codes = df_codes
+        mymp.si_limit = silim
+        mymp.kernel()
+        mymp.with_singles = True
+        mymp.kernel()
+
+        ftmf = smearing(mf, sigma=1/beta)
+        ftmf.kernel()
+        print(mf.mo_occ)
+        print(ftmf.mo_occ)
+
+        mymp = make_ftmp2(mymp, beta=1000,
+                          particle_fix=None,
+                          ecorr_method="finite_difference")
+        mymp.kernel()
+        mymp.with_singles = False
+        mymp.kernel()
+        mymp.particle_fix = "pt"
+        mymp.with_singles = True
+        mymp.kernel()
+
+        print("CHECK", mf.e_tot, ftmf.e_tot, ftmf.e_free, ftmf.e_zero)
+        if True:
+            mymp = make_ftmp2(PT2(mf), beta=10000, with_singles=True,
+                              particle_fix="pt", ecorr_method="analytical")
+            mymp.kernel()
+            mymp = PT2(ftmf)
+        else:
+            mymp = ACMP2(mf)
+            mymp.ac_interpolator = interpolator
+            mymp.df_codes = df_codes
+            mymp.si_limit = silim
+            mymp.with_singles = True
+            mymp.kernel()
+            mymp = ACMP2(ftmf)
+            mymp.ac_interpolator = interpolator
+            mymp.df_codes = df_codes
+            mymp.si_limit = silim
+        mymp = make_ftmp2(mymp, beta=beta,
+                          # particle_fix="iter_fd",
+                          particle_fix="pt",
+                          ecorr_method="finite_difference",
+                          # ecorr_method="zeroth_order",
+                          occ_tol=1e-8)
+        print(mymp._init_smearing())
+        mymp.with_singles = True
+        mymp.kernel()
+        print(mymp._init_smearing(), mymp.mu_opt)
 
 
 if __name__ == "__main__":
