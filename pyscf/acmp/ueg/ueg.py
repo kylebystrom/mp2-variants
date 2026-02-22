@@ -46,7 +46,7 @@ class UEG(object):
         self.verbose = verbose
 
         self._volume = self.nelec * (4.0/3.0) * np.pi * self.rs**3
-        self._length = self._volume ** (1./ 3.)
+        self._length = self._volume ** (1. / 3.)
         self.madelung = 2.83729747948149 / self._length
 
         self.vcut = False
@@ -56,10 +56,10 @@ class UEG(object):
             self.print_info()
 
     def create_gvecs(self):
-        converged=False
-        icur = int( math.ceil( ( 3. / ( 4. * np.pi ) * self.nbas ) ** ( 1. / 3. ) ) )
+        converged = False
+        icur = int(math.ceil((3. / (4. * np.pi) * self.nbas) ** (1. / 3.)))
         Gvecs = []
-        while not converged :
+        while not converged:
             curbas = 0
             self.gnorm = []
             if self.verbose:
@@ -73,10 +73,10 @@ class UEG(object):
                         Gvecs.append(ix)
                         Gvecs.append(iy)
                         Gvecs.append(iz)
-                        self.gnorm.append( ix2 + iy2 + iz2 )
+                        self.gnorm.append(ix2 + iy2 + iz2)
                         curbas = curbas + 1
-            self.gnorm = sorted( self.gnorm )
-            if icur < np.sqrt( self.gnorm[ self.nbas - 1] ):
+            self.gnorm = sorted(self.gnorm)
+            if icur < np.sqrt(self.gnorm[self.nbas - 1]):
                 converged = False
                 icur = icur + 1
             else:
@@ -85,7 +85,7 @@ class UEG(object):
         same_value = True
         while same_value:
             upper_limit = upper_limit + 1
-            if( self.gnorm[ upper_limit ] - self.gnorm[ upper_limit - 1 ] > 0 ):
+            if (self.gnorm[upper_limit] - self.gnorm[upper_limit - 1] > 0):
                 same_value = False
             else:
                 same_value = True
@@ -94,7 +94,7 @@ class UEG(object):
         same_value = True
         while same_value:
             lower_limit = lower_limit - 1
-            if( self.gnorm[ lower_limit ] - self.gnorm[ lower_limit - 1 ] > 0 ):
+            if (self.gnorm[lower_limit] - self.gnorm[lower_limit - 1] > 0):
                 same_value = False
             else:
                 same_value = True
@@ -103,10 +103,10 @@ class UEG(object):
         self.llim = lower_limit
         outbas = self.ulim
         self.nbas = outbas
-        self.rgvecs = np.zeros( ( outbas, 3 ) )
+        self.rgvecs = np.zeros(( outbas, 3 ))
         count = 0
-        maxnorm  = self.gnorm[ outbas - 1 ]
-        for i in range( 0, int(len(Gvecs)/3) ):
+        maxnorm = self.gnorm[outbas - 1]
+        for i in range(0, int(len(Gvecs)/3)):
             ix = Gvecs[ 3 * i + 0 ]
             iy = Gvecs[ 3 * i + 1 ]
             iz = Gvecs[ 3 * i + 2 ]
@@ -128,7 +128,7 @@ class UEG(object):
         twopdg = 2. * np.pi / self._length
         twopdgsq = twopdg * twopdg
         kin = 0.0
-        if p == q :
+        if p == q:
             px = self.rgvecs[p][0]
             py = self.rgvecs[p][1]
             pz = self.rgvecs[p][2]
@@ -146,7 +146,7 @@ class UEG(object):
         normsq = pqx*pqx + pqy*pqy + pqz*pqz
 
         integral = 0.0
-        if( pqx == srx and pqy == sry and pqz == srz ):
+        if (pqx == srx and pqy == sry and pqz == srz):
             G = 2*np.pi/self._length * np.sqrt(normsq)
             integral = self.v(G)
         return integral
@@ -196,7 +196,7 @@ class UEG(object):
     def get_hcore(self):
         h = np.zeros((self.nbas, self.nbas))
         for p in range(self.nbas):
-            h[p,p] = self.kin(p,p)
+            h[p, p] = self.kin(p, p)
             #if p < self.nocc:
             #    h[p,p] -= self.madelung
         return h
@@ -207,8 +207,8 @@ class UEG(object):
         for p in range(self.nbas):
             vk = 0.0
             for i in range(self.nocc):
-                vk += self.eri(p,i,i,p)
-            veff[p,p] = -vk
+                vk += self.eri(p, i, i, p)
+            veff[p, p] = -vk
         return veff
 
     def get_fock(self):
@@ -217,14 +217,14 @@ class UEG(object):
         for p in range(self.nbas):
             twoel = 0.0
             for i in range(self.nocc):
-                twoel -= self.eri(p,i,i,p)
-            vcoul[p,p] = twoel
+                twoel -= self.eri(p, i, i, p)
+            vcoul[p, p] = twoel
         return hcore + vcoul
 
     def Umat(self):
         '''The transformation matrix from complex PWs to real cos/sin orbitals'''
         gvecs = np.array(self.rgvecs)
-        Umat = np.zeros((self.nbas,self.nbas), dtype=complex)
+        Umat = np.zeros((self.nbas, self.nbas), dtype=complex)
         basis = 0
         for gi,g in enumerate(gvecs):
             mgi = np.linalg.norm(-g-gvecs,axis=1).argmin()
@@ -242,9 +242,7 @@ class UEG(object):
     def eri_chem_real(self):
         '''Generate ERIs in the cos/sin basis in chemists notation'''
         Umat = self.Umat()
-        # changing basis in fock does nothing 
-        #fock = np.dot(Umat.T.conj(),np.dot(np.diag(self.fock()),Umat)).real
-
+        # changing basis in fock does nothing
         eri = self.eri_full_fast()
         eri = np.tensordot(Umat.conj(),eri,axes=[0,0])
         eri = np.tensordot(Umat,eri,axes=[0,1]).transpose(1,0,2,3)
@@ -255,7 +253,6 @@ class UEG(object):
 
     def eri_full_fast(self):
         '''Generate ERIs in the PW basis in chemists notation'''
-        #start = time.clock()
         outvec = np.zeros((self.nbas, self.nbas,
                            self.nbas, self.nbas))
         for p in range( 0, len( self.rgvecs ) ):
@@ -285,22 +282,19 @@ class UEG(object):
                             outvec[ r, s, p, q ] = integral
                             outvec[ s, r, q, p ] = integral
 
-        #end = time.clock()
-        #if self.verbose: 
-        #    print("time to build ERIs : %14.8f" % (end-start))
         return outvec
 
     def v(self, G):
         '''Coulomb kernel'''
         if self.vcut:
-            R = self._length/2
+            R = self._length / 2
             G += 1e-8
-            integral = 4*np.pi / (self._volume*G*G) * (1-np.cos(G*R))
+            integral = 4 * np.pi / (self._volume * G * G) * (1 - np.cos(G * R))
         else:
-            if np.isclose(G,0):
+            if np.isclose(G, 0):
                 integral = self.madelung
             else:
-                integral = 4*np.pi / (self._volume*G*G)
+                integral = 4 * np.pi / (self._volume*G*G)
         return integral
 
     def print_info(self):
@@ -312,3 +306,101 @@ class UEG(object):
         print(" - Length of Box             = %14.8f " % self._length)
         print(" - Number of Basis Functions = %14d " % self.nbas)
 
+
+class FTUEG(UEG):
+    def __init__(self, nelec, beta, nbasis, rs, verbose=False, occ_tol=0.0):
+        # NOTE: nelec can be a float
+        self.nelec = nelec
+        self.beta = beta
+        self.occs = None
+        self.nocc = None
+        self.mu = None
+        self.occ_tol = occ_tol
+        self.nbas = nbasis
+        self.dim = 3
+        self.rs = rs
+        self._ulim = 0
+        self._llim = 0
+        self._rgvecs = np.zeros(0)
+        self._scf_en = 0.0
+        self.verbose = verbose
+
+        self._volume = self.nelec * (4.0/3.0) * np.pi * self.rs**3
+        self._length = self._volume ** (1. / 3.)
+        self.madelung = 2.83729747948149 / self._length
+
+        self.vcut = False
+
+        self.create_gvecs()
+        if self.verbose:
+            self.print_info()
+
+    def run_occ_scf(self, h0, occ0=None):
+        from pyscf.scf.addons import _fermi_smearing_occ, _smearing_optimize
+
+        def opt_occs(mo_es, nocc, sigma):
+            return _smearing_optimize(_fermi_smearing_occ, mo_es, nocc, sigma)
+
+        if occ0 is None:
+            mo_es = np.diag(self.get_hcore())
+            self.mu, self.occs = opt_occs(mo_es, self.nelec / 2, 1.0 / self.beta)
+        else:
+            assert self.mu is not None
+            self.occs = occ0
+        self.nocc = np.sum(self.occs > self.occ_tol)
+
+        if h0 == "fock":
+            for step in range(50):
+                mo_es = np.diag(self.get_hcore() + self.get_veff())
+                old_occs = self.occs.copy()
+                self.mu, self.occs = opt_occs(
+                    mo_es, self.nelec / 2, 1.0 / self.beta
+                )
+                self.nocc = np.sum(self.occs > self.occ_tol)
+                err = np.sum(np.abs(old_occs - self.occs))
+                if err < 1e-10:
+                    break
+            else:
+                raise RuntimeError("Failed to converge occupations")
+
+    def get_veff(self):
+        # UEG doesn't have a Hartree energy due to positive background
+        veff = np.zeros((self.nbas, self.nbas))
+        for p in range(self.nbas):
+            vk = 0.0
+            for i in range(self.nocc):
+                vk += self.occs[i] * self.eri(p, i, i, p)
+            veff[p, p] = -vk
+        return veff
+
+    def get_fock(self):
+        vcoul = np.zeros((self.nbas, self.nbas))
+        hcore = self.get_hcore()
+        for p in range(self.nbas):
+            twoel = 0.0
+            for i in range(self.nocc):
+                twoel -= self.occs[i] * self.eri(p, i, i, p)
+            vcoul[p, p] = twoel
+        return hcore + vcoul
+
+    def mgga_rho_vector(self):
+        rs = self.rs
+        density = 1.0 / (4./3 * np.pi * rs**3)
+        ek = 0
+        for p in range(self.nocc):
+            ek += 2 * self.occs[p] * self.kin(p, p)
+        ek /= self.nelec
+        # now ek is kinetic energy per electron
+        # multiply by density to get KE
+        ek *= density
+        zero = 0 * density
+        return np.array([density, zero, zero, zero, ek])[:, None]
+
+    def print_info(self):
+        print("Uniform Electron Gas Parameters")
+        print(" - Dimension of System       = %14d " % self.dim)
+        print(" - Number of Electrons       = %14.8f " % self.nelec)
+        print(" - Madelung constant         = %14.8f " % self.madelung)
+        print(" - Volume of Box             = %14.8f " % self._volume)
+        print(" - Length of Box             = %14.8f " % self._length)
+        print(" - Number of Basis Functions = %14d " % self.nbas)

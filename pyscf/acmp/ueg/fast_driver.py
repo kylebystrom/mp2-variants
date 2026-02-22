@@ -95,7 +95,6 @@ def run_ueg_calc(**settings):
     g_o = occ_gvecs.astype(numpy.int32)
     g_v = vir_gvecs.astype(numpy.int32)
 
-
     t1 = time.monotonic()
     if my_ueg.vcut:
         coulomb_ov = numpy.empty((ekins_o.size, ekins_v.size))

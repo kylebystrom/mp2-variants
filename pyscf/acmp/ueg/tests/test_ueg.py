@@ -4,6 +4,7 @@ import numpy as np
 import unittest
 from pyscf.acmp import mp2_numint as funcs
 from pyscf.acmp.ac_interpolators import MOD_ISI_ACW, get_interpolator
+from pyscf.acmp.ueg.magic_numbers import MAGIC_NUMBERS
 from numpy.testing import assert_allclose
 
 
@@ -58,6 +59,34 @@ class PyscfVsFastDriver(unittest.TestCase):
             assert_allclose(res + err, res, atol=1e-8, rtol=1e-8)
             print(max_err, max_rel_err)
 
+    def test_ueg_mf(self):
+        NELEC = 54
+        VCUT = True
+        for h0 in ["kinetic", "fock"]:
+            mf, ek, ex = driver.get_ueg_mf(
+                NELEC, MAGIC_NUMBERS[6], 2.7,
+                h0, VCUT
+            )
+            ftmf, ftek, ftex = driver.get_ueg_mf(
+                NELEC, MAGIC_NUMBERS[6], 2.7,
+                h0, VCUT, beta=10
+            )
+            print("EK", ek, ftek)
+            print("EX", ex, ftex)
+            ftmf, ftek1, ftex1 = driver.get_ueg_mf(
+                NELEC + 3.5, MAGIC_NUMBERS[6], 2.7,
+                h0, VCUT, beta=10
+            )
+            print("EK", ftek, ftek1)
+            print("EX", ftex, ftex1)
+            ftmf, ftek1, ftex1 = driver.get_ueg_mf(
+                NELEC - 3.5, MAGIC_NUMBERS[6], 2.7,
+                h0, VCUT, beta=10
+            )
+            print("EK", ftek, ftek1)
+            print("EX", ftex, ftex1)
+            print()
+
     def test_kappa_mp2(self):
         method1 = lambda mf: driver.UEGKappaMP2(mf, kappa=1.5, damping="kappa")
         method2 = {"name": "kappa", "param": 1.5}
@@ -83,7 +112,7 @@ class PyscfVsFastDriver(unittest.TestCase):
         silim = ("GGA", funcs.gga_pch_winf_v2)
         acw = MOD_ISI_ACW()
         aci = get_interpolator(acw=acw, mode="M")
-        
+
         def method1(mf):
             mymp = driver.UEGACMP2(mf)
             mymp.ac_interpolator = aci
@@ -99,6 +128,78 @@ class PyscfVsFastDriver(unittest.TestCase):
         }
         self._check_pyscf_vs_fast_driver(method1, method2, [False])
 
+    def test_ft_mp2(self):
+        from pyscf.acmp.ft_mp2 import make_ftmp2
+
+        nelecs = [44, 54, 64, 74]
+        beta = 20
+
+        df_codes = [("GGA", funcs.gga_pch_winfp_v2)]
+        silim = ("GGA", funcs.gga_pch_winf_v2)
+        acw = MOD_ISI_ACW()
+        aci = get_interpolator(acw=acw, mode="M")
+
+        def method1(mf):
+            mymp = driver.UEGACMP2(mf)
+            mymp.ac_interpolator = aci
+            mymp.si_limit = silim
+            mymp.df_codes = df_codes
+            return mymp
+
+        mf, ek, ex = driver.get_ueg_mf(
+            nelecs[1], MAGIC_NUMBERS[6], 2.7,
+            "fock", False
+        )
+        mymp = method1(mf)
+        mymp.verbose = 0
+        ecorr, _ = mymp.kernel()
+        ens = np.array([ek, ex, ecorr / nelecs[1]])
+        print(ens, np.sum(ens))
+        ref_ens = ens
+        print()
+
+        mf, ek, ex = driver.get_ueg_mf(
+            nelecs[1], MAGIC_NUMBERS[6], 2.7,
+            "fock", False, beta=10000
+        )
+        mymp = method1(mf)
+        mymp.verbose = 0
+        mymp = make_ftmp2(mymp, beta=1000, particle_fix=None,
+                          ecorr_method="zeroth_order")
+
+        mymp.with_singles = True
+        ecorr, _ = mymp.kernel()
+        ens = np.array([ek, ex, ecorr / nelecs[1]])
+        assert_allclose(ens, ref_ens, atol=1e-4, rtol=0)
+
+        mymp = method1(mf)
+        mymp.verbose = 0
+        mymp = make_ftmp2(mymp, beta=1000, particle_fix="dv2",
+                          ecorr_method="finite_difference")
+        mymp.with_singles = True
+        ecorr, _ = mymp.kernel()
+        ens = np.array([ek, ex, ecorr / nelecs[1]])
+        assert_allclose(ens, ref_ens, atol=1e-4, rtol=0)
+
+        for nelec in nelecs:
+            mf, ek, ex = driver.get_ueg_mf(
+                nelec, MAGIC_NUMBERS[6], 2.7,
+                "fock", False, beta=beta
+            )
+            mymp = method1(mf)
+            mymp.verbose = 0
+            #mymp = make_ftmp2(mymp, beta=beta, particle_fix=None,
+            #                  ecorr_method="zeroth_order")
+            mymp = make_ftmp2(mymp, beta=beta, particle_fix="dv2",
+                              ecorr_method="finite_difference")
+            mymp.with_singles = False
+            ecorr, _ = mymp.kernel()
+            ens = np.array([ek, ex, ecorr / nelec])
+            print()
+            print(ens, ens.sum(), mymp.e_free / nelec, mymp.e_tot / nelec,
+                  mymp.e_zero / nelec)
+            print()
+
+
 if __name__ == "__main__":
     unittest.main()
-

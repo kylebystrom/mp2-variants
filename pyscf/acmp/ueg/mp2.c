@@ -528,3 +528,76 @@ void ecorr_mp2_vec(const int nocc, int *occ_gvecs,
 }
     free(ref_xyz);
 }
+
+static inline double get_ei_ft(double gap, double beta)
+{
+    int cond = gap < 0;
+    int cond2 = fabs(gap) > 1e-10;
+    double expei = exp(-beta * gap);
+    double ei = cond2 ? (1.0 / gap) : (-0.5 * beta);
+    expei = (cond ? (expei * (1 - expei)) : (expei - 1))
+            / (1 + expei * expei);
+    if (cond2) {
+        ei += (2 + beta * beta * gap * gap) * expei / (beta * gap * gap);
+    }
+    return ei;
+}
+
+void ecorr_mp2_vec_ft(const int nocc, int *occ_gvecs, double *f_occ,
+                      const int nvir, int *vir_gvecs, double *fm_vir,
+                      double *coulomb_ov, double *eig_o, double *eig_v,
+                      double beta, double *res)
+{
+    // NOTE fm_vir is 1 - f_vir
+    int dat[5];
+    setup_mp2_maxs(nocc, occ_gvecs, nvir, vir_gvecs, 0.0,
+                   eig_o, eig_v, NULL, NULL, dat);
+    const int maxx = dat[0];
+    const int maxy = dat[1];
+    const int maxz = dat[2];
+    const int n2_lcut = dat[3];
+    const int n2_ucut = dat[4];
+    const int refsize = (maxx + 1) * (maxy + 1) * (maxz + 1);
+    int *ref_xyz = malloc(refsize * sizeof(int));
+    setup_mp2_refs(maxx, maxy, maxz, nvir, vir_gvecs, ref_xyz);
+#pragma omp parallel
+{
+    double edi = 0;
+    double exi = 0;
+#pragma omp for
+    for (int i = 0; i < nocc; i++) {
+        double ediff, wt;
+        int n2b;
+        int indx;
+        int indy;
+        int indz;
+        int b;
+        edi = 0;
+        exi = 0;
+        for (int j = 0; j < nocc; j++) {
+            for (int a = 0; a < nvir; a++) {
+                indx = occ_gvecs[3 * i + 0] + occ_gvecs[3 * j + 0] - vir_gvecs[3 * a + 0];
+                indy = occ_gvecs[3 * i + 1] + occ_gvecs[3 * j + 1] - vir_gvecs[3 * a + 1];
+                indz = occ_gvecs[3 * i + 2] + occ_gvecs[3 * j + 2] - vir_gvecs[3 * a + 2];
+                n2b = indx * indx + indy * indy + indz * indz;
+                if (n2b > n2_lcut && n2b <= n2_ucut) {
+                    b = ref_xyz[abs(indx) * (maxy + 1) * (maxz + 1)
+                                + abs(indy) * (maxz + 1) + abs(indz)];
+                    ediff = eig_v[a] + eig_v[b] - eig_o[i] - eig_o[j];
+                    wt = get_ei_ft(ediff, beta);
+                    wt = coulomb_ov[i * nvir + a] * wt;
+                    wt *= f_occ[j] * fm_vir[a] * fm_vir[b];
+                    edi += coulomb_ov[i * nvir + a] * wt;
+                    exi += coulomb_ov[j * nvir + a] * wt;
+                }
+            }
+        }
+        // shouldn't need the critical but debugging OMP
+#pragma omp critical
+{
+        res[i] = exi - 2 * edi;
+}
+    }
+}
+    free(ref_xyz);
+}

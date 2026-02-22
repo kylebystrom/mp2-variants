@@ -109,7 +109,7 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2, with_singles):
 
     nocc = mp.nocc
     nvir = mp.nmo - nocc
-    eia = mo_energy[:nocc,None] - mo_energy[None,nocc:]
+    eia = mo_energy[:nocc, None] - mo_energy[None, nocc:]
 
     if with_t2:
         raise NotImplementedError

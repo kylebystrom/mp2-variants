@@ -21,7 +21,12 @@ DEFAULTS = {
 
 def get_1e_vmat_ueg(mp, code, mo_coeff=None):
     mf = mp._scf
-    nocc = int(numpy.rint(numpy.sum(mf.mo_occ))) // 2
+    nocc = mp.nocc
+    if nocc is None:
+        if mo_coeff is not None:
+            nocc = mo_coeff.shape[-1]
+        else:
+            nocc = mf.mo_occ.shape[-1]
     if code == "__HF__":
         return 0.5 * mf.get_k()[:nocc, :nocc]
     elif code == "HF":
@@ -58,24 +63,49 @@ def fill_settings_(settings):
         settings[key] = settings.get(key, value)
 
 
-def get_ueg_mf(nelec, nbas, rs, h0, vcut):
+def get_ueg_mf(nelec, nbas, rs, h0, vcut, beta=None):
     mol = gto.M()
     mol.nelectron = nelec
     mf = scf.RHF(mol)
+    # mf.conv_tol = 1e-20
+    # mf.conv_tol_grad = 1e-20
 
-    my_ueg = ueg.UEG(nelec, nbas, rs, verbose=True)
-    print("Madelung energy =", my_ueg.madelung)
-    my_ueg.vcut = vcut
-    print("Using vcut =", my_ueg.vcut)
+    def _check_conv(envs):
+        is_conv = numpy.max(numpy.abs(envs["dm"] - envs["dm_last"])) < 1e-10
+        is_conv = is_conv and abs(envs["e_tot"] - envs["last_hf_e"]) < envs["conv_tol"]
+        is_conv = is_conv and envs["norm_gorb"] < envs["conv_tol_grad"]
+        return is_conv
+
+    mf.check_convergence = _check_conv
+    mf.direct_scf = False
+    mf.diis_start_cycle = 1000
+
+    if beta is None:
+        my_ueg = ueg.UEG(nelec, nbas, rs, verbose=True)
+        print("Madelung energy =", my_ueg.madelung)
+        my_ueg.vcut = vcut
+        print("Using vcut =", my_ueg.vcut)
+        nocc = nelec // 2
+        occs = numpy.ones(nocc)
+    else:
+        from pyscf.scf.addons import smearing
+
+        mf = smearing(mf, sigma=1.0 / beta)
+        my_ueg = ueg.FTUEG(nelec, beta, nbas, rs, verbose=True)
+        print("Madelung energy =", my_ueg.madelung)
+        my_ueg.vcut = vcut
+        print("Using vcut =", my_ueg.vcut)
+        my_ueg.run_occ_scf(h0)
+        nocc = my_ueg.nocc
+        occs = my_ueg.occs[:nocc]
 
     # overwrite the mean-field methods in order to use custom integrals
     hcore = my_ueg.get_hcore()
-    nocc = nelec // 2
-    ek = numpy.mean(numpy.diag(hcore)[:nocc])
     veff = my_ueg.get_veff()
-    # For closed-shell, veff is 0.5 * k
-    kmat = 2 * veff
-    ex = 0.5 * numpy.mean(numpy.diag(veff)[:nocc])
+    # For closed-shell, veff is -0.5 * k
+    kmat = -2 * veff
+    assert (kmat >= 0).all()
+    jmat = numpy.zeros_like(kmat)
     if h0 == "kinetic":
         veff[:] = 0.0
     elif h0 == "fock":
@@ -84,11 +114,57 @@ def get_ueg_mf(nelec, nbas, rs, h0, vcut):
         raise ValueError("Unsupported h0")
     mf.get_hcore = lambda *args: hcore
     mf.get_ovlp = lambda *args: numpy.eye(nbas)
-    mf.get_k = lambda *args, **kwargs: kmat
-    mf.mgga_rho_vector = lambda *args: my_ueg.mgga_rho_vector()
+
+    def _check_inputs(hermi, omega):
+        if hermi != 1:
+            raise NotImplementedError
+        if omega is not None:
+            raise NotImplementedError
+
     # need to overwrite get_veff because UEG has no hartree energy
-    # also, this is simpler than overwriting get_jk()
-    mf.get_veff = lambda *args: veff
+    # Also need to override get_k and get_jk for ACMP2 and FTMP2.
+    if beta is None:
+        mf.get_k = lambda *args, **kwargs: kmat
+        mf.get_jk = lambda *args, **kwargs: (jmat, kmat)
+        mf.get_veff = lambda *args, **kwargs: veff
+    else:
+        def get_k(mol=None, dm=None, hermi=1, omega=None):
+            _check_inputs(hermi, omega)
+            if dm is None:
+                occs = my_ueg.occs
+            else:
+                occs = numpy.diag(dm) / 2
+            my_ueg.occs = occs
+            my_ueg.nocc = numpy.sum(my_ueg.occs > my_ueg.occ_tol)
+            return -2 * my_ueg.get_veff()
+
+        def get_jk(mol=None, dm=None, hermi=1, with_j=True, with_k=True,
+                   omega=None):
+            _check_inputs(hermi, omega)
+            if with_j:
+                j = jmat
+            else:
+                j = None
+            if with_k:
+                k = get_k(dm=dm)
+            else:
+                k = None
+            return j, k
+
+        def get_veff(mol=None, dm=None, dm_last=0, vhf_last=0, hermi=1):
+            _check_inputs(hermi, None)
+            if h0 == "kinetic":
+                return jmat
+            else:
+                return -0.5 * get_k(dm=dm)
+
+        mf.get_k = get_k
+        mf.get_jk = get_jk
+        mf.get_veff = get_veff
+
+    mf.get_j = lambda *args, **kwargs: jmat
+    mf.mgga_rho_vector = lambda *args, **kwargs: my_ueg.mgga_rho_vector()
+    mf.get_mu = lambda *args, **kwargs: my_ueg.mu
 
     # this stores N^4 _eri in memory, which is limiting
     if INCORE_ERIS:
@@ -99,6 +175,15 @@ def get_ueg_mf(nelec, nbas, rs, h0, vcut):
     mf.verbose = 0
     mf.init_guess = '1e'
     mf.scf()
+    ek = (occs * numpy.diag(hcore)[:nocc]).sum() / occs.sum()
+    ex = -0.25 * (occs * numpy.diag(kmat)[:nocc]).sum() / occs.sum()
+    mf.e_tot = (ek + ex) * nelec
+    occs_test = mf.mo_occ[:nocc] / 2
+    assert numpy.linalg.norm(occs_test - occs) < 1e-8
+    assert numpy.max(numpy.abs(occs_test - occs)) < 1e-9
+    if beta is not None:
+        my_ueg.occs = mf.mo_occ[:nocc] / 2
+        my_ueg.nocc = numpy.sum(my_ueg.occs > my_ueg.occ_tol)
     return mf, ek, ex
 
 
@@ -126,4 +211,3 @@ def run_ueg_loop(nelec_index, nbas_indices, rs, mp2_init):
         settings["nbas_index"] = nbas_index
         energies.append(run_ueg_calc(**settings))
     return energies
-

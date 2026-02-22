@@ -55,7 +55,7 @@ def make_ftmp2(mymp, beta=1, mu0=None, occ_tol=0, mu_tol=1e-6,
 
 def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
               task="gp", with_singles=True, beta=None,
-              smooth_edep=True):
+              smooth_edep=True, dv=None):
     """
     Args:
         mo_energy: Zeroth-order Hamiltonian eigenvalues
@@ -179,6 +179,8 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
     clipped_occs = numpy.clip(occs, 1e-200, 1)
     clipped_1occs = numpy.clip(1 - occs, 1e-200, 1)
     e0, gp1, v1 = mp._get_v1(mo_energy, eris.mo_coeff, occs)
+    if dv is not None:
+        v1[:] += dv * numpy.identity(v1.shape[-1])
     f0 = clipped_occs * numpy.log(clipped_occs)
     f0 += clipped_1occs * numpy.log(clipped_1occs)
     f0 = e0 + 2 / beta * f0.sum()
@@ -214,13 +216,9 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
             results["e1"] += mu1 * (2 * mo_energy[:nocc] * dndu).sum()
     if "n1" in results_keys:
         results["n1"] = (-2 * v1ii.real * dndu).sum()
-        #if mu1 is not None:
-        #    results["n1"] += (2 * dndu).sum() * mu1
     if "dn1" in results_keys:
         results["dn1"] = (-2 * dvdu_ii.real * dndu).sum()
         results["dn1"] -= (2 * v1ii.real * dndu * beta * (1 - 2 * occs[:nocc])).sum()
-        #if mu1 is not None:
-        #    raise NotImplementedError
 
     dn_ia = occs[:nocc, None] * (1 - occs[None, -nvir:])
     if task == "osmi":
@@ -486,7 +484,6 @@ def get_correct_nval(mp):
         raise NotImplementedError
 
 
-
 class FTMP2Mixin:
 
     __name_mixin__ = "FTPT2-"
@@ -521,6 +518,9 @@ class FTMP2Mixin:
                     perturbation strength and solve for the effective
                     potential that preserves the electron number
                     to second order.
+                "dv2": Compute the first-order shift in potential that
+                    preserves the particle number and apply it to the
+                    singles term in the PT expansion.
                 "iter": Iteratively solve for the chemical potential for
                     which the expectation value of the particle number
                     at the PT2 level is equal to the number of electrons
@@ -566,7 +566,7 @@ class FTMP2Mixin:
         self.mu0 = mu0
         self.occ_tol = occ_tol
         self.mu_tol = mu_tol
-        if particle_fix not in [None, "pt", "iter", "iter_fd"]:
+        if particle_fix not in [None, "pt", "dv", "dv2", "iter", "iter_fd"]:
             raise ValueError("Unsupported particle_fix={}".format(particle_fix))
         self.particle_fix = particle_fix
         if ecorr_method not in ["zeroth_order", "first_order", "analytical",
@@ -708,23 +708,43 @@ class FTMP2Mixin:
 
         cput1 = log.timer('ao2mo', *cput1)
 
+        dv = None
+
         def _call_kernel(mu, beta, task):
-            return self.gc_kernel(
+            kwargs = dict(
                 mo_energy=mo_energy,
                 mo_coeff=mo_coeff,
                 eris=eris,
                 mu=mu,
                 beta=beta,
                 with_singles=self.with_singles,
-                task=task,
+                dv=dv,
             )
+            if self.particle_fix == "dv2":
+                kwargs["task"] = "mu"
+                res = self.gc_kernel(**kwargs)
+                kwargs["dv"] = -1 * res["mu1"]
+            kwargs["task"] = task
+            results = self.gc_kernel(**kwargs)
+            if (
+                self.particle_fix == "dv"
+                and task == "gp"
+                and isinstance(mu, tuple)
+            ):
+                results["gp1"] += mu[1] * results["n0"]
+                results["gp2"] += mu[2] * results["n0"]
+            return results
 
         if not self._scf.converged:
             raise NotImplementedError("Non-canonical FT-MP2")
 
-        if self.particle_fix == "pt":
+        if self.particle_fix in ["pt", "dv"]:
             results = _call_kernel(mu, self.beta, "mu")
-            mu = (results["mu0"], results["mu1"], results["mu2"])
+            if self.particle_fix == "dv2":
+                mu = results["mu0"]
+                dv = -1 * results["mu1"]
+            else:
+                mu = (results["mu0"], results["mu1"], results["mu2"])
         elif self.particle_fix in ["iter", "iter_fd"]:
             # TODO might be able to get away with only re-computing
             # ao2mo when a certain threshold change in occupations
@@ -756,7 +776,7 @@ class FTMP2Mixin:
                 raise RuntimeError("Chemical potential not converged!")
         else:
             # keep chemical potential fixed as the initial mu
-            assert self.particle_fix is None
+            assert self.particle_fix in [None, "dv", "dv2"]
             results = {}
 
         if self.ecorr_method == "zeroth_order":
@@ -783,7 +803,9 @@ class FTMP2Mixin:
             if "gp1" not in results or "gp2" not in results:
                 results.update(_call_kernel(mu, self.beta, "gp"))
 
-            if isinstance(mu, tuple):
+            if self.particle_fix in ["dv", "dv2"]:
+                mu1_term = mu2_term = 0
+            elif isinstance(mu, tuple):
                 # particle number is fixed by mu is not
                 nelec = results["n0"]
                 mu1_term = nelec * results["mu1"]
@@ -919,7 +941,7 @@ class FTMP2Mixin:
 class FTACMP2Mixin(FTMP2Mixin):
     def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
                   task="gp", with_singles=True, beta=None,
-                  smooth_edep=True):
+                  smooth_edep=True, dv=None):
         if task not in ["mu", "gp", "osmi", "opt"]:
             raise ValueError("Unsupported kernel task for FT-ACMP2")
         if task == "gp":
@@ -935,6 +957,7 @@ class FTACMP2Mixin(FTMP2Mixin):
             with_singles=with_singles,
             beta=beta,
             smooth_edep=smooth_edep,
+            dv=dv,
         )
         if task == "mu":
             kwargs["task"] = "mu"
@@ -956,9 +979,11 @@ class FTACMP2Mixin(FTMP2Mixin):
         lnocc = numpy.log(numpy.clip(occs, 1e-16, 1))
         wt_mat = numpy.exp(-0.25 * (lnocc - lnocc[:, None])**2)
         w_list = [((w + w.T) * 0.5 * wt_mat) for w in w_list]
-        print(results["gp2"], 2 * mp.ac_interpolator(w_list, occs=occs))
         results["gp2"] += 2 * mp.ac_interpolator(w_list, occs=occs)
         mp.acmp_wlist = w_list
+
+        sub_results = results.copy()
+        sub_results.pop("w_list", None)
 
         # results should contain gp1 and gp2 as predicted by OSMI
         return results

@@ -95,7 +95,7 @@ class KnownValues(unittest.TestCase):
         print(mymp.e_tot, mymp.e_corr)
 
         mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="pt",
-                          ecorr_method="finite_difference", cc_tol=0)
+                          ecorr_method="finite_difference", occ_tol=0)
         mymp.kernel()
 
         print()
@@ -129,6 +129,19 @@ class KnownValues(unittest.TestCase):
         mymp.kernel()
 
         print(mymp.e_tot, mymp.e_corr)
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="pt",
+                          ecorr_method="finite_difference")
+        mymp.kernel()
+
+        print(mymp.e_tot, mymp.e_corr)
+
+        mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="dv",
+                          ecorr_method="finite_difference")
+        mymp.kernel()
+
+        print(mymp.e_tot, mymp.e_corr)
+        print("\n\n\n")
 
         mymp = make_ftmp2(MP2(ftmf), beta=1000, particle_fix=None,
                           ecorr_method="finite_difference")
@@ -168,13 +181,13 @@ class KnownValues(unittest.TestCase):
             assert_allclose(e0, f0 + (f1-f2)/delta + mu*(f4-f3)/delta,
                             rtol=0, atol=1e-6)
 
-    def test_ft_ac_pt2(self):
+    def _check_ft_ac_pt2(self, beta=80):
         df_codes = []  # [("GGA", funcs.gga_pch_winfp_v2)]
         silim = ("GGA", funcs.gga_pch_winf_v2)
         acw = BasicACW()
         interpolator = get_interpolator(acw=acw, mode="M")
 
-        beta = 100
+        beta = 80
 
         # Make a simple molecule and zero-T PBE calculation
         XC = "PBE"
@@ -223,14 +236,21 @@ class KnownValues(unittest.TestCase):
             mymp.si_limit = silim
         mymp = make_ftmp2(mymp, beta=beta,
                           # particle_fix="iter_fd",
-                          particle_fix="pt",
+                          particle_fix="iter",
                           ecorr_method="finite_difference",
                           # ecorr_method="zeroth_order",
                           occ_tol=1e-8)
         print(mymp._init_smearing())
         mymp.with_singles = True
         mymp.kernel()
-        print(mymp._init_smearing(), mymp.mu_opt)
+        print(mymp._init_smearing(), mymp.mu_opt, mymp.get_e_hf())
+        return mymp.e_zero
+
+    def test_ft_ac_pt2(self):
+        ens = []
+        betas = [60, 70, 80, 90, 100]
+        for beta in betas:
+            self._check_ft_ac_pt2(beta)
 
 
 if __name__ == "__main__":
