@@ -190,6 +190,34 @@ void get_coulomb_ov_nocut(double *coulomb_ov, int *occ_gvecs, int *vir_gvecs,
     }
 }
 
+void get_coulomb_ov_nocut_ft(double *coulomb_ov, int *occ_gvecs, int *vir_gvecs,
+                             int nocc, int nvir, double length, double volume,
+                             double madelung)
+{
+    double gfac = 2 * PI / length;
+    double vfac = 4 * PI / volume;
+#pragma omp parallel for
+    for (int o = 0; o < nocc; o++) {
+        double G;
+        int diff;
+        for (int v = 0; v < nvir; v++) {
+            G = 0;
+            diff = vir_gvecs[3 * v + 0] - occ_gvecs[3 * o + 0];
+            G += diff * diff;
+            diff = vir_gvecs[3 * v + 1] - occ_gvecs[3 * o + 1];
+            G += diff * diff;
+            diff = vir_gvecs[3 * v + 2] - occ_gvecs[3 * o + 2];
+            G += diff * diff;
+            G = gfac * sqrt(G);
+            if (G < 1e-8) {
+                coulomb_ov[o * nvir + v] = madelung;
+            } else {
+                coulomb_ov[o * nvir + v] = vfac / (G * G);
+            }
+        }
+    }
+}
+
 void get_vk_vcut(double *vk, int *occ_gvecs, int *other_gvecs,
                  int nocc, int nother, double length, double volume)
 {
@@ -266,6 +294,59 @@ void get_vk_novcut(double *vk, int *occ_gvecs, int *other_gvecs,
             G += diff * diff;
             G = gfac * sqrt(G);
             vk[v] += (G < 1e-8) ? madelung : (vfac / (G * G));
+        }
+    }
+}
+
+void get_vk_vcut_ft(double *vk, int *occ_gvecs, int *other_gvecs,
+                    int nocc, int nother, double length, double volume,
+                    double *occs)
+{
+    double gfac = 2 * PI / length;
+    double vfac = 4 * PI / volume;
+    double R = 0.5 * length;
+#pragma omp parallel for
+    for (int v = 0; v < nother; v++) {
+        vk[v] = 0;
+        double G;
+        int diff;
+        for (int o = 0; o < nocc; o++) {
+            G = 0;
+            diff = other_gvecs[3 * v + 0] - occ_gvecs[3 * o + 0];
+            G += diff * diff;
+            diff = other_gvecs[3 * v + 1] - occ_gvecs[3 * o + 1];
+            G += diff * diff;
+            diff = other_gvecs[3 * v + 2] - occ_gvecs[3 * o + 2];
+            G += diff * diff;
+            G = gfac * sqrt(G);
+            G += 1e-8;
+            G = (1 - cos(G * R)) / (G * G);
+            vk[v] += vfac * G * occs[o];
+        }
+    }
+}
+
+void get_vk_novcut_ft(double *vk, int *occ_gvecs, int *other_gvecs,
+                      int nocc, int nother, double length, double volume,
+                      double madelung, double *occs)
+{
+    double gfac = 2 * PI / length;
+    double vfac = 4 * PI / volume;
+#pragma omp parallel for
+    for (int v = 0; v < nother; v++) {
+        vk[v] = 0;
+        double G;
+        int diff;
+        for (int o = 0; o < nocc; o++) {
+            G = 0;
+            diff = other_gvecs[3 * v + 0] - occ_gvecs[3 * o + 0];
+            G += diff * diff;
+            diff = other_gvecs[3 * v + 1] - occ_gvecs[3 * o + 1];
+            G += diff * diff;
+            diff = other_gvecs[3 * v + 2] - occ_gvecs[3 * o + 2];
+            G += diff * diff;
+            G = gfac * sqrt(G);
+            vk[v] += occs[o] * ((G < 1e-8) ? madelung : (vfac / (G * G)));
         }
     }
 }
@@ -533,7 +614,7 @@ static inline double get_ei_ft(double gap, double beta)
 {
     int cond = gap < 0;
     int cond2 = fabs(gap) > 1e-10;
-    double expei = exp(-beta * gap);
+    double expei = exp(-beta * fabs(gap));
     double ei = cond2 ? (1.0 / gap) : (-0.5 * beta);
     expei = (cond ? (expei * (1 - expei)) : (expei - 1))
             / (1 + expei * expei);
@@ -555,7 +636,6 @@ void ecorr_mp2_vec_ft(const int nocc, int *occ_gvecs, double *f_occ,
     const int maxx = dat[0];
     const int maxy = dat[1];
     const int maxz = dat[2];
-    const int n2_lcut = dat[3];
     const int n2_ucut = dat[4];
     const int refsize = (maxx + 1) * (maxy + 1) * (maxz + 1);
     int *ref_xyz = malloc(refsize * sizeof(int));
@@ -580,15 +660,19 @@ void ecorr_mp2_vec_ft(const int nocc, int *occ_gvecs, double *f_occ,
                 indy = occ_gvecs[3 * i + 1] + occ_gvecs[3 * j + 1] - vir_gvecs[3 * a + 1];
                 indz = occ_gvecs[3 * i + 2] + occ_gvecs[3 * j + 2] - vir_gvecs[3 * a + 2];
                 n2b = indx * indx + indy * indy + indz * indz;
-                if (n2b > n2_lcut && n2b <= n2_ucut) {
+                if (n2b <= n2_ucut) {
                     b = ref_xyz[abs(indx) * (maxy + 1) * (maxz + 1)
                                 + abs(indy) * (maxz + 1) + abs(indz)];
-                    ediff = eig_v[a] + eig_v[b] - eig_o[i] - eig_o[j];
-                    wt = get_ei_ft(ediff, beta);
-                    wt = coulomb_ov[i * nvir + a] * wt;
-                    wt *= f_occ[j] * fm_vir[a] * fm_vir[b];
-                    edi += coulomb_ov[i * nvir + a] * wt;
-                    exi += coulomb_ov[j * nvir + a] * wt;
+                    if (b != -1 && b < nvir) {
+                        ediff = eig_v[a] + eig_v[b] - eig_o[i] - eig_o[j];
+                        wt = -1 * get_ei_ft(-1 * ediff, beta);
+                        wt *= coulomb_ov[i * nvir + a];
+                        wt *= f_occ[j] * fm_vir[a] * fm_vir[b];
+                        edi += coulomb_ov[i * nvir + a] * wt;
+                        exi += coulomb_ov[j * nvir + a] * wt;
+                    } else {
+                        printf("CONDITION MET %d %d %d %d\n", i, j, a, b);
+                    }
                 }
             }
         }

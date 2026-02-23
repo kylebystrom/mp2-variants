@@ -53,6 +53,13 @@ def make_ftmp2(mymp, beta=1, mu0=None, occ_tol=0, mu_tol=1e-6,
                          (mixin_cls, mymp.__class__))
 
 
+def damp_ft_wmat_off_diag(w_list, occs):
+    lnocc = numpy.log(numpy.clip(occs, 1e-16, 1))
+    wt_mat = numpy.exp(-0.25 * (lnocc - lnocc[:, None])**2)
+    w_list = [((w + w.T) * 0.5 * wt_mat) for w in w_list]
+    return w_list
+
+
 def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
               task="gp", with_singles=True, beta=None,
               smooth_edep=True, dv=None):
@@ -72,6 +79,9 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
             definition of the inverse energy gap. Can increase
             compute cost somewhat but is required for the OSMI
             task.
+        dv: Constant term in the potential that keeps the particle number
+            fixed to first order. Applied to first-order potential
+            if it is provided (i.e. not None)
 
     Returns:
         result (dict): A dictionary of the results. Included
@@ -976,9 +986,7 @@ class FTACMP2Mixin(FTMP2Mixin):
 
         wlist_df = mp.get_acmp_df_wlist(mo_coeff)
         w_list = concatenate_w(w_list, wlist_df)
-        lnocc = numpy.log(numpy.clip(occs, 1e-16, 1))
-        wt_mat = numpy.exp(-0.25 * (lnocc - lnocc[:, None])**2)
-        w_list = [((w + w.T) * 0.5 * wt_mat) for w in w_list]
+        w_list = damp_ft_wmat_off_diag(w_list, occs)
         results["gp2"] += 2 * mp.ac_interpolator(w_list, occs=occs)
         mp.acmp_wlist = w_list
 

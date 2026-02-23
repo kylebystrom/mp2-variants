@@ -45,7 +45,7 @@ def kin(my_ueg, vecs):
     return res
 
 
-def get_k_potential(my_ueg, occ_gvecs, other_gvecs):
+def get_k_potential(my_ueg, occ_gvecs, other_gvecs, occs=None):
     occ_gvecs = occ_gvecs.astype(numpy.int32)
     other_gvecs = other_gvecs.astype(numpy.int32)
     assert occ_gvecs.shape[-1] == 3
@@ -64,65 +64,96 @@ def get_k_potential(my_ueg, occ_gvecs, other_gvecs):
         ctypes.c_double(my_ueg._length),
         ctypes.c_double(my_ueg._volume),
     ]
-    if my_ueg.vcut:
-        mylib.get_vk_vcut(*args)
-    else:
+    if not my_ueg.vcut:
         args.append(ctypes.c_double(my_ueg.madelung))
-        mylib.get_vk_novcut(*args)
+    if occs is None:
+        if my_ueg.vcut:
+            mylib.get_vk_vcut(*args)
+        else:
+            mylib.get_vk_novcut(*args)
+    else:
+        args.append(occs.ctypes.data_as(ctypes.c_void_p))
+        if my_ueg.vcut:
+            mylib.get_vk_vcut_ft(*args)
+        else:
+            mylib.get_vk_novcut_ft(*args)
     return vk
 
 
 def run_ueg_calc(**settings):
     fill_settings_(settings)
     STYLE = settings["method"].get("name", "kappa")
-    nelec_index = settings["nelec_index"]
-    nelec = 2 * MAGIC_NUMBERS[nelec_index]
+    if "nelec" in settings:
+        nelec = settings.pop("nelec")
+    else:
+        nelec_index = settings["nelec_index"]
+        nelec = 2 * MAGIC_NUMBERS[nelec_index]
+
     nbas = MAGIC_NUMBERS[settings["nbas_index"]]
     rs = settings["ws_radius"]
     print("WS RADIUS", rs)
 
+    if settings.get("beta") is None:
+        finite_t = False
+        assert nelec in (2 * MAGIC_NUMBERS)
+        my_ueg = ueg.UEG(nelec, nbas, rs, verbose=False)
+    else:
+        finite_t = True
+        my_ueg = ueg.FTUEG(nelec, settings["beta"], nbas, rs,
+                           verbose=False, occ_tol=settings.get("occ_tol", 0))
+        #if settings.get("ecorr_method", None) == "finite_difference":
+        #    dbeta = settings["beta"] * 0.0001
+
     t0 = time.monotonic()
-    my_ueg = ueg.UEG(nelec, nbas, rs, verbose=False)
     if nbas != my_ueg.nbas:
-        print("nbasis = %d is not a magic number. It has been increased to %d."%(nbas, my_ueg.nbas))
+        print("nbasis = %d is not a magic number. It has been increased to %d." % (nbas, my_ueg.nbas))
         nbas = my_ueg.nbas
     my_ueg.vcut = settings["vcut"]
     gvecs = numpy.asarray(my_ueg.rgvecs, order="C", dtype=numpy.float64)
-    occ_gvecs = gvecs[:nelec//2]
-    vir_gvecs = gvecs[nelec//2:]
+
+    if finite_t:
+        my_ueg.run_occ_scf(settings["h0"])
+        occs = my_ueg.occs
+        nocc = my_ueg.nocc
+        nvir = numpy.sum(1 - occs > my_ueg.occ_tol)
+    else:
+        nocc = nelec // 2
+        nvir = nbas - nelec // 2
+
+    occ_gvecs = gvecs[:nocc]
+    vir_gvecs = gvecs[-nvir:]
     ekins_o = kin(my_ueg, occ_gvecs)
     ekins_v = kin(my_ueg, vir_gvecs)
     g_o = occ_gvecs.astype(numpy.int32)
     g_v = vir_gvecs.astype(numpy.int32)
 
     t1 = time.monotonic()
+    coulomb_ov = numpy.empty((ekins_o.size, ekins_v.size))
+    args = [
+        coulomb_ov.ctypes.data_as(ctypes.c_void_p),
+        g_o.ctypes.data_as(ctypes.c_void_p),
+        g_v.ctypes.data_as(ctypes.c_void_p),
+        ctypes.c_int(ekins_o.size),
+        ctypes.c_int(ekins_v.size),
+        ctypes.c_double(my_ueg._length),
+        ctypes.c_double(my_ueg._volume),
+    ]
     if my_ueg.vcut:
-        coulomb_ov = numpy.empty((ekins_o.size, ekins_v.size))
-        mylib.get_coulomb_ov_cut(
-            coulomb_ov.ctypes.data_as(ctypes.c_void_p),
-            g_o.ctypes.data_as(ctypes.c_void_p),
-            g_v.ctypes.data_as(ctypes.c_void_p),
-            ctypes.c_int(ekins_o.size),
-            ctypes.c_int(ekins_v.size),
-            ctypes.c_double(my_ueg._length),
-            ctypes.c_double(my_ueg._volume),
-        )
+        coul_fn = mylib.get_coulomb_ov_cut
+    elif finite_t:
+        args.append(ctypes.c_double(my_ueg.madelung))
+        coul_fn = mylib.get_coulomb_ov_nocut_ft
     else:
-        coulomb_ov = numpy.empty((ekins_o.size, ekins_v.size))
-        mylib.get_coulomb_ov_nocut(
-            coulomb_ov.ctypes.data_as(ctypes.c_void_p),
-            g_o.ctypes.data_as(ctypes.c_void_p),
-            g_v.ctypes.data_as(ctypes.c_void_p),
-            ctypes.c_int(ekins_o.size),
-            ctypes.c_int(ekins_v.size),
-            ctypes.c_double(my_ueg._length),
-            ctypes.c_double(my_ueg._volume),
-        )
-    eigk = -1 * get_k_potential(my_ueg, occ_gvecs, gvecs)
+        coul_fn = mylib.get_coulomb_ov_nocut
+    coul_fn(*args)
+    if finite_t:
+        eigk = -1 * get_k_potential(my_ueg, occ_gvecs, gvecs, occs=my_ueg.occs)
+    else:
+        eigk = -1 * get_k_potential(my_ueg, occ_gvecs, gvecs)
     t2 = time.monotonic()
 
-    eigk_o = eigk[:my_ueg.nocc]
-    eigk_v = eigk[my_ueg.nocc:]
+    eigk_o = eigk[:nocc]
+    eigk_v = eigk[-nvir:]
     if settings["h0"] == "fock":
         eig_o = ekins_o + eigk_o
         eig_v = ekins_v + eigk_v
@@ -137,6 +168,8 @@ def run_ueg_calc(**settings):
 
     t3 = time.monotonic()
     if STYLE == "lambda":
+        if finite_t:
+            raise NotImplementedError
         res_shape = (3,)
         if "gap_model" in settings["method"]:
             KAPPA = 0
@@ -182,30 +215,48 @@ def run_ueg_calc(**settings):
             gaps = 0.5 * KAPPA * numpy.ones_like(eig_o)
         gaps = gaps.ctypes.data_as(ctypes.c_void_p)
     elif STYLE == "kappa":
+        if finite_t:
+            raise NotImplementedError
         res_shape = (3,)
         KAPPA = settings["method"].get("param", 1.1)
         gaps = None
     elif STYLE == "ac":
         res_shape = (len(eig_o),)
-    res = numpy.empty(res_shape, dtype=numpy.float64)
-    args = [
-        ctypes.c_int(eig_o.size),
-        g_o.ctypes.data_as(ctypes.c_void_p),
-        ctypes.c_int(eig_v.size),
-        g_v.ctypes.data_as(ctypes.c_void_p),
-        # ctypes.c_double(KAPPA),
-        coulomb_ov.ctypes.data_as(ctypes.c_void_p),
-        eig_o.ctypes.data_as(ctypes.c_void_p),
-        eig_v.ctypes.data_as(ctypes.c_void_p),
-        res.ctypes.data_as(ctypes.c_void_p),
-        # gaps,
-    ]
-    if STYLE in ["lambda", "kappa"]:
-        args.insert(4, ctypes.c_double(KAPPA))
-        args.insert(len(args), gaps)
-        fn = mylib.ecorr_kappa_mp2
+    res = numpy.zeros(res_shape, dtype=numpy.float64)
+    if finite_t:
+        f_o = my_ueg.occs[:nocc]
+        fm_v = 1 - my_ueg.occs[-nvir:]
+        args = [
+            ctypes.c_int(eig_o.size),
+            g_o.ctypes.data_as(ctypes.c_void_p),
+            f_o.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(eig_v.size),
+            g_v.ctypes.data_as(ctypes.c_void_p),
+            fm_v.ctypes.data_as(ctypes.c_void_p),
+            coulomb_ov.ctypes.data_as(ctypes.c_void_p),
+            eig_o.ctypes.data_as(ctypes.c_void_p),
+            eig_v.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_double(settings["beta"]),
+            res.ctypes.data_as(ctypes.c_void_p),
+        ]
+        fn = mylib.ecorr_mp2_vec_ft
     else:
-        fn = mylib.ecorr_mp2_vec
+        args = [
+            ctypes.c_int(eig_o.size),
+            g_o.ctypes.data_as(ctypes.c_void_p),
+            ctypes.c_int(eig_v.size),
+            g_v.ctypes.data_as(ctypes.c_void_p),
+            coulomb_ov.ctypes.data_as(ctypes.c_void_p),
+            eig_o.ctypes.data_as(ctypes.c_void_p),
+            eig_v.ctypes.data_as(ctypes.c_void_p),
+            res.ctypes.data_as(ctypes.c_void_p),
+        ]
+        if STYLE in ["lambda", "kappa"]:
+            args.insert(4, ctypes.c_double(KAPPA))
+            args.insert(len(args), gaps)
+            fn = mylib.ecorr_kappa_mp2
+        else:
+            fn = mylib.ecorr_mp2_vec
     fn(*args)
     t4 = time.monotonic()
     print("TIMES", t1 - t0, t2 - t1, t3 - t2, t4 - t3)
@@ -218,11 +269,13 @@ def run_ueg_calc(**settings):
         e_kin = ekins_o
         e_exch = 0.5 * eigk_o
         dens = rho * numpy.ones_like(ekins_o)
-        return numpy.stack([e_kin, e_exch, dens, res])
+        if finite_t:
+            return [e_kin, e_exch, my_ueg, res]
+        else:
+            return numpy.stack([e_kin, e_exch, dens, res])
     else:
         e_kin = numpy.mean(ekins_o)
         e_exch = 0.5 * numpy.mean(eigk_o)
-        print("ENERGY TERMS", res / nelec)
         return numpy.append([e_kin, e_exch], [res[-1] / nelec])
 
 
@@ -233,7 +286,13 @@ def post_process(method, ueg_result):
         aci = method["aci"]
         df_codes = method["df_codes"] + [method["silim"]]
         w_list = [ueg_result[-1].copy(), ueg_result[1].copy()]
-        rhovec = ueg.mgga_rho_vector(ueg_result[2])
+        if isinstance(ueg_result[2], numpy.ndarray):
+            finite_t = False
+            rhovec = ueg.mgga_rho_vector(ueg_result[2])
+        else:
+            finite_t = True
+            assert isinstance(ueg_result[2], ueg.FTUEG)
+            rhovec = ueg_result[2].mgga_rho_vector()
         for dtype, dffunc in df_codes:
             if dtype == "LDA":
                 res = dffunc(rhovec[0])
@@ -245,10 +304,20 @@ def post_process(method, ueg_result):
         w_list[-1] *= -1
         w_list[0] *= -1
         w_list[1] *= -1
-        print("SUMS", [w.mean() for w in w_list])
-        ec = aci([numpy.diag(w) for w in w_list])
-        print("ECORR TOTAL", 2 * ec)
-        return ec / w_list[0].size
+        if finite_t:
+            nocc = ueg_result[2].nocc
+            occs = ueg_result[2].occs[:nocc]
+            for i, w in enumerate(w_list[2:]):
+                w_list[i + 2] = w * numpy.ones_like(w_list[0])
+            w_list = [w[:nocc] for w in w_list]
+            ec = aci([numpy.diag(w) for w in w_list], occs=occs)
+            ek = (ueg_result[0] * occs).sum() / occs.sum()
+            ex = (ueg_result[1] * occs).sum() / occs.sum()
+            ec = ec / occs.sum()
+            return numpy.array([ek, ex, ec])
+        else:
+            ec = aci([numpy.diag(w) for w in w_list])
+            return ec / w_list[0].size
     else:
         raise ValueError("Unsupported method")
 
@@ -291,4 +360,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

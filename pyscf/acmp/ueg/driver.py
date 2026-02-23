@@ -5,6 +5,7 @@ from pyscf.acmp.ueg.magic_numbers import MAGIC_NUMBERS
 from pyscf.acmp.kappa_mp2 import KappaMP2
 from pyscf.acmp.lambda_mp2 import LambdaMP2
 from pyscf.acmp.ac_mp2 import ACMP2
+from pyscf.acmp.ft_mp2 import make_ftmp2
 
 INCORE_ERIS = True
 
@@ -184,17 +185,36 @@ def get_ueg_mf(nelec, nbas, rs, h0, vcut, beta=None):
     if beta is not None:
         my_ueg.occs = mf.mo_occ[:nocc] / 2
         my_ueg.nocc = numpy.sum(my_ueg.occs > my_ueg.occ_tol)
+    mf._ueg = my_ueg
     return mf, ek, ex
 
 
 def run_ueg_calc(**settings):
     fill_settings_(settings)
-    nelec = 2 * MAGIC_NUMBERS[settings["nelec_index"]]
+
+    if "nelec" in settings:
+        nelec = settings.pop("nelec")
+    else:
+        nelec_index = settings["nelec_index"]
+        nelec = 2 * MAGIC_NUMBERS[nelec_index]
+
+    if settings.get("beta") is None:
+        assert nelec in (2 * MAGIC_NUMBERS)
+
     nbas = MAGIC_NUMBERS[settings["nbas_index"]]
     mf, ek, ex = get_ueg_mf(
-        nelec, nbas, settings["ws_radius"], settings["h0"], settings["vcut"]
+        nelec, nbas, settings["ws_radius"], settings["h0"], settings["vcut"],
+        beta=settings.get("beta", None)
     )
     mymp = settings["mp2_init"](mf)
+
+    if settings.get("beta") is not None:
+        particle_fix = settings.get("particle_fix", None)
+        ecorr_method = settings.get("ecorr_method", "zeroth_order")
+        mymp = make_ftmp2(mymp, beta=settings["beta"],
+                          particle_fix=particle_fix,
+                          ecorr_method=ecorr_method)
+
     mymp.verbose = 0
     ecorr, _ = mymp.kernel()
     return numpy.array([ek, ex, ecorr / nelec])
