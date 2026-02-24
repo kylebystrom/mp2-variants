@@ -60,6 +60,55 @@ def damp_ft_wmat_off_diag(w_list, occs):
     return w_list
 
 
+def construct_ei_helper(beta, smooth_edep, small_gap):
+    if smooth_edep:
+        def _get_ei_helper(gap, get_tderiv=False):
+            cond = gap < 0
+            cond2 = numpy.abs(gap) > small_gap
+            expei = numpy.exp(-beta * numpy.abs(gap))
+            ei = numpy.empty_like(gap)
+            ei[:] = -0.5 * beta
+            ei[cond2] = 1.0 / gap[cond2]
+            if get_tderiv:
+                tmp1 = 2 * beta * gap + (beta * gap)**3
+                tmp2 = (beta * gap)**2 - 2
+                dexpei = numpy.where(
+                    cond,
+                    (tmp1 * expei * (1 - 2 * expei - expei * expei)
+                     + tmp2 * expei * (1 - expei) * (1 + expei * expei)),
+                    (tmp1 * expei * (expei * expei - 2 * expei - 1)
+                     + tmp2 * (expei - 1) * (1 + expei * expei)),
+                ) / (1 + expei * expei)**2
+            expei[:] = numpy.where(
+                cond,
+                expei * (1 - expei),
+                (expei - 1)
+            ) / (1 + expei * expei)
+            ei[cond2] += (
+                (1.0 / beta)
+                * (2 + beta**2 * gap * gap) * expei
+                / (gap * gap)
+            )[cond2]
+            if get_tderiv:
+                dei = numpy.empty_like(gap)
+                dei[:] = -0.5 * beta
+                dei[cond2] = dexpei[cond2] / (beta * gap[cond2] * gap[cond2])
+                return ei, dei
+            return ei
+    else:
+        def _get_ei_helper(gap, get_tderiv=False):
+            cond2 = numpy.abs(gap) > small_gap
+            ei = numpy.empty_like(gap)
+            ei[:] = -0.5 * beta
+            ei[cond2] = 1.0 / gap[cond2]
+            if get_tderiv:
+                dei = numpy.zeros_like(gap)
+                dei[numpy.logical_not(cond2)] = -0.5 * beta
+                return ei, dei
+            return ei
+    return _get_ei_helper
+
+
 def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
               task="gp", with_singles=True, beta=None,
               smooth_edep=True, dv=None):
@@ -175,7 +224,7 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
     if mo_energy is None:
         mo_energy = eris.mo_energy
 
-    if False: # mu1 is not None:
+    if False:  # mu1 is not None:
         dmoe = mo_energy - mu
     else:
         dmoe = mo_energy
@@ -253,51 +302,7 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         dnterm_ia = dnterm_ia + (1 - occs[:nocc, None]) * occs[:nocc, None]
         dnterm_ia[:] *= -1 * beta ** 2
 
-    if smooth_edep:
-        def _get_ei_helper(gap, get_tderiv=False):
-            cond = gap < 0
-            cond2 = numpy.abs(gap) > small_gap
-            expei = numpy.exp(-beta * numpy.abs(gap))
-            ei = numpy.empty_like(gap)
-            ei[:] = -0.5 * beta
-            ei[cond2] = 1.0 / gap[cond2]
-            if get_tderiv:
-                tmp1 = 2 * beta * gap + (beta * gap)**3
-                tmp2 = (beta * gap)**2 - 2
-                dexpei = numpy.where(
-                    cond,
-                    (tmp1 * expei * (1 - 2 * expei - expei * expei)
-                     + tmp2 * expei * (1 - expei) * (1 + expei * expei)),
-                    (tmp1 * expei * (expei * expei - 2 * expei - 1)
-                     + tmp2 * (expei - 1) * (1 + expei * expei)),
-                ) / (1 + expei * expei)**2
-            expei[:] = numpy.where(
-                cond,
-                expei * (1 - expei),
-                (expei - 1)
-            ) / (1 + expei * expei)
-            ei[cond2] += (
-                (1.0 / beta)
-                * (2 + beta**2 * gap * gap) * expei
-                / (gap * gap)
-            )[cond2]
-            if get_tderiv:
-                dei = numpy.empty_like(gap)
-                dei[:] = -0.5 * beta
-                dei[cond2] = dexpei[cond2] / (beta * gap[cond2] * gap[cond2])
-                return ei, dei
-            return ei
-    else:
-        def _get_ei_helper(gap, get_tderiv=False):
-            cond2 = numpy.abs(gap) > small_gap
-            ei = numpy.empty_like(gap)
-            ei[:] = -0.5 * beta
-            ei[cond2] = 1.0 / gap[cond2]
-            if get_tderiv:
-                dei = numpy.zeros_like(gap)
-                dei[numpy.logical_not(cond2)] = -0.5 * beta
-                return ei, dei
-            return ei
+    _get_ei_helper = construct_ei_helper(beta, smooth_edep, small_gap)
 
     inve, dinve = _get_ei_helper(eia, True)
 

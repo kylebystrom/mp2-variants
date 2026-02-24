@@ -6,6 +6,7 @@ import numpy as np
 import time
 import math
 import sys
+from pyscf.dft.libxc import eval_xc
 
 
 def sorter_function(inarr):
@@ -179,6 +180,13 @@ class UEG(object):
 
         return vx + vc
 
+    def vxc_ks(self):
+        rs = self.rs
+        density = np.array([1.0 / (4./3 * np.pi * rs**3)])
+        return eval_xc(
+            "LDA_X,LDA_C_PW_MOD", density, spin=0, deriv=1
+        )[1][0].item()
+
     def mgga_rho_vector(self):
         rs = self.rs
         density = 1.0 / (4./3 * np.pi * rs**3)
@@ -343,6 +351,8 @@ class FTUEG(UEG):
 
         if occ0 is None:
             mo_es = np.diag(self.get_hcore())
+            if h0 == "ks":
+                mo_es = mo_es + self.vxc_ks()
             self.mu, self.occs = opt_occs(mo_es, self.nelec / 2, 1.0 / self.beta)
         else:
             assert self.mu is not None
@@ -386,10 +396,14 @@ class FTUEG(UEG):
     def mgga_rho_vector(self):
         rs = self.rs
         density = 1.0 / (4./3 * np.pi * rs**3)
+        # In practice we might have manually set the occupations
+        # which could change the density from the initial default
+        nelec = 2 * self.occs.sum()
+        density *= nelec / self.nelec
         ek = 0
         for p in range(self.nocc):
             ek += 2 * self.occs[p] * self.kin(p, p)
-        ek /= self.nelec
+        ek /= nelec
         # now ek is kinetic energy per electron
         # multiply by density to get KE
         ek *= density

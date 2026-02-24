@@ -101,8 +101,6 @@ def run_ueg_calc(**settings):
         finite_t = True
         my_ueg = ueg.FTUEG(nelec, settings["beta"], nbas, rs,
                            verbose=False, occ_tol=settings.get("occ_tol", 0))
-        #if settings.get("ecorr_method", None) == "finite_difference":
-        #    dbeta = settings["beta"] * 0.0001
 
     t0 = time.monotonic()
     if nbas != my_ueg.nbas:
@@ -116,6 +114,14 @@ def run_ueg_calc(**settings):
         occs = my_ueg.occs
         nocc = my_ueg.nocc
         nvir = numpy.sum(1 - occs > my_ueg.occ_tol)
+        if settings.get("with_singles", False):
+            if settings["h0"] == "fock":
+                vii = numpy.zeros(nocc)
+            else:
+                vii = numpy.diag(my_ueg.get_veff())
+                if settings["h0"] == "ks":
+                    vii = vii - my_ueg.vxc_ks()
+                vii = -2 * my_ueg.beta * vii * vii * (1 - occs[:nocc])
     else:
         nocc = nelec // 2
         nvir = nbas - nelec // 2
@@ -160,8 +166,11 @@ def run_ueg_calc(**settings):
     elif settings["h0"] == "kinetic":
         eig_o = ekins_o.copy()
         eig_v = ekins_v.copy()
+    elif settings["h0"] == "ks":
+        eig_o = ekins_o + my_ueg.vxc_ks()
+        eig_v = ekins_v + my_ueg.vxc_ks()
     else:
-        raise ValueError("h0 must be 'fock' or 'kinetic'")
+        raise ValueError("h0 must be 'fock', 'ks', or 'kinetic'")
     mylib.get_ecorr_kappa_mp2.restype = ctypes.c_double
     assert coulomb_ov.flags.c_contiguous
     assert coulomb_ov.shape == (eig_o.size, eig_v.size)
@@ -265,11 +274,16 @@ def run_ueg_calc(**settings):
     KEX = -0.75 * (3.0 / numpy.pi)**(1.0 / 3) * rho**(1.0 / 3)
     print("EXACT", TEX, KEX)
 
+    if finite_t and settings.get("ecorr_method", "zeroth_order") == "finite_difference":
+        raise NotImplementedError
+
     if STYLE == "ac":
         e_kin = ekins_o
         e_exch = 0.5 * eigk_o
         dens = rho * numpy.ones_like(ekins_o)
         if finite_t:
+            if settings.get("with_singles", False):
+                res[:] += vii
             return [e_kin, e_exch, my_ueg, res]
         else:
             return numpy.stack([e_kin, e_exch, dens, res])

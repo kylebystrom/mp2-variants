@@ -109,6 +109,8 @@ def get_ueg_mf(nelec, nbas, rs, h0, vcut, beta=None):
     jmat = numpy.zeros_like(kmat)
     if h0 == "kinetic":
         veff[:] = 0.0
+    elif h0 == "ks":
+        veff[:] = my_ueg.vxc_ks() * numpy.identity(veff.shape[0])
     elif h0 == "fock":
         pass
     else:
@@ -156,6 +158,8 @@ def get_ueg_mf(nelec, nbas, rs, h0, vcut, beta=None):
             _check_inputs(hermi, None)
             if h0 == "kinetic":
                 return jmat
+            elif h0 == "ks":
+                return my_ueg.vxc_ks() * numpy.identity(jmat.shape[0])
             else:
                 return -0.5 * get_k(dm=dm)
 
@@ -211,9 +215,11 @@ def run_ueg_calc(**settings):
     if settings.get("beta") is not None:
         particle_fix = settings.get("particle_fix", None)
         ecorr_method = settings.get("ecorr_method", "zeroth_order")
+        with_singles = settings.get("with_singles", False)
         mymp = make_ftmp2(mymp, beta=settings["beta"],
                           particle_fix=particle_fix,
-                          ecorr_method=ecorr_method)
+                          ecorr_method=ecorr_method,
+                          with_singles=with_singles)
 
     mymp.verbose = 0
     ecorr, _ = mymp.kernel()
