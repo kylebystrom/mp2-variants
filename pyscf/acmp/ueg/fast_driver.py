@@ -81,6 +81,7 @@ def get_k_potential(my_ueg, occ_gvecs, other_gvecs, occs=None):
 
 
 def run_ueg_calc(**settings):
+    t0 = time.monotonic()
     fill_settings_(settings)
     STYLE = settings["method"].get("name", "kappa")
     if "nelec" in settings:
@@ -102,7 +103,6 @@ def run_ueg_calc(**settings):
         my_ueg = ueg.FTUEG(nelec, settings["beta"], nbas, rs,
                            verbose=False, occ_tol=settings.get("occ_tol", 0))
 
-    t0 = time.monotonic()
     if nbas != my_ueg.nbas:
         print("nbasis = %d is not a magic number. It has been increased to %d." % (nbas, my_ueg.nbas))
         nbas = my_ueg.nbas

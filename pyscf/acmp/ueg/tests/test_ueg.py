@@ -132,8 +132,9 @@ class PyscfVsFastDriver(unittest.TestCase):
         from pyscf.acmp.ft_mp2 import make_ftmp2
 
         nelecs = [44, 54, 64, 74]
-        beta = 20
-        nbas_index = 5
+        beta = 100
+        nbas_index = 6
+        occ_tol = 1e-10
 
         df_codes = [("GGA", funcs.gga_pch_winfp_v2)]
         silim = ("GGA", funcs.gga_pch_winf_v2)
@@ -168,7 +169,8 @@ class PyscfVsFastDriver(unittest.TestCase):
         mymp.verbose = 0
         mymp = make_ftmp2(mymp, beta=1000, particle_fix=None,
                           ecorr_method="zeroth_order",
-                          with_singles=with_singles)
+                          with_singles=with_singles,
+                          occ_tol=occ_tol)
         ecorr, _ = mymp.kernel()
         ens = np.array([ek, ex, ecorr / nelecs[1]])
         assert_allclose(ens, ref_ens, atol=1e-4, rtol=0)
@@ -177,7 +179,8 @@ class PyscfVsFastDriver(unittest.TestCase):
         mymp.verbose = 0
         mymp = make_ftmp2(mymp, beta=1000, particle_fix="dv2",
                           ecorr_method="finite_difference",
-                          with_singles=with_singles)
+                          with_singles=with_singles,
+                          occ_tol=occ_tol)
         ecorr, _ = mymp.kernel()
         ens = np.array([ek, ex, ecorr / nelecs[1]])
         assert_allclose(ens, ref_ens, atol=1e-4, rtol=0)
@@ -206,7 +209,8 @@ class PyscfVsFastDriver(unittest.TestCase):
             #                   ecorr_method="zeroth_order")
             mymp = make_ftmp2(mymp, beta=beta, particle_fix="dv2",
                               ecorr_method=ecorr_method,
-                              with_singles=with_singles)
+                              with_singles=with_singles,
+                              occ_tol=occ_tol)
             ecorr, _ = mymp.kernel()
             ens = np.array([ek, ex, ecorr / nelec])
             echeck = ens.sum()
@@ -225,6 +229,7 @@ class PyscfVsFastDriver(unittest.TestCase):
                 "particle_fix": "dv2",
                 "ecorr_method": ecorr_method,
                 "with_singles": with_singles,
+                "occ_tol": occ_tol,
                 "mp2_init": method1,
             }
             etest_ks = driver.run_ueg_calc(**settings).sum()
@@ -241,7 +246,9 @@ class PyscfVsFastDriver(unittest.TestCase):
             settings["particle_fix"] = "dv2"
             settings["ecorr_method"] = ecorr_method
             res = fast_driver_ft.run_ueg_calc(**settings)
+            print(res)
             assert_allclose(res[3], etest_ks, atol=1e-8, rtol=0)
+            assert_allclose(res[5], mymp.e_zero / nelec, atol=1e-8, rtol=0)
 
     def test_ft_mp2_kinetic(self):
         self.test_ft_mp2("ks")

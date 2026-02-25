@@ -351,6 +351,33 @@ void get_vk_novcut_ft(double *vk, int *occ_gvecs, int *other_gvecs,
     }
 }
 
+void get_vk_ks_ft(double *vk, int *occ_gvecs,
+                  int nocc, double length, double volume,
+                  double madelung, double *occs)
+{
+    double gfac = 2 * PI / length;
+    double vfac = 4 * PI / volume;
+#pragma omp parallel for
+    for (int o1 = 0; o1 < nocc; o1++) {
+        vk[o1] = 0;
+        double G;
+        int diff;
+        for (int o2 = 0; o2 < o1; o2++) {
+            G = 0;
+            diff = occ_gvecs[3 * o1 + 0] - occ_gvecs[3 * o2 + 0];
+            G += diff * diff;
+            diff = occ_gvecs[3 * o1 + 1] - occ_gvecs[3 * o2 + 1];
+            G += diff * diff;
+            diff = occ_gvecs[3 * o1 + 2] - occ_gvecs[3 * o2 + 2];
+            G += diff * diff;
+            G = gfac * sqrt(G);
+            vk[o1] += ((G < 1e-8) ? madelung : (vfac / (G * G)));
+        }
+        vk[o1] += 0.5 * madelung;
+        vk[o1] *= occs[o1];
+    }
+}
+
 double get_ecorr_kappa_mp2(int *inds_oov, const int nocc, const int nvir,
                            const double kappa, double *coulomb_ov,
                            double *eig_o, double *eig_v)
@@ -670,8 +697,6 @@ void ecorr_mp2_vec_ft(const int nocc, int *occ_gvecs, double *f_occ,
                         wt *= f_occ[j] * fm_vir[a] * fm_vir[b];
                         edi += coulomb_ov[i * nvir + a] * wt;
                         exi += coulomb_ov[j * nvir + a] * wt;
-                    } else {
-                        printf("CONDITION MET %d %d %d %d\n", i, j, a, b);
                     }
                 }
             }

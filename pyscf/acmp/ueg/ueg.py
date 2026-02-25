@@ -393,7 +393,7 @@ class FTUEG(UEG):
             vcoul[p, p] = twoel
         return hcore + vcoul
 
-    def mgga_rho_vector(self):
+    def mgga_rho_vector(self, gvecs=None):
         rs = self.rs
         density = 1.0 / (4./3 * np.pi * rs**3)
         # In practice we might have manually set the occupations
@@ -401,8 +401,15 @@ class FTUEG(UEG):
         nelec = 2 * self.occs.sum()
         density *= nelec / self.nelec
         ek = 0
-        for p in range(self.nocc):
-            ek += 2 * self.occs[p] * self.kin(p, p)
+        if gvecs is None:
+            for p in range(self.nocc):
+                ek += 2 * self.occs[p] * self.kin(p, p)
+        else:
+            # TODO check more carefully
+            twopdg2 = 2 * np.pi / self._length
+            twopdg2 = twopdg2 * twopdg2
+            for p in range(self.nocc):
+                ek += self.occs[p] * gvecs[p].dot(gvecs[p])
         ek /= nelec
         # now ek is kinetic energy per electron
         # multiply by density to get KE
@@ -418,3 +425,29 @@ class FTUEG(UEG):
         print(" - Volume of Box             = %14.8f " % self._volume)
         print(" - Length of Box             = %14.8f " % self._length)
         print(" - Number of Basis Functions = %14d " % self.nbas)
+
+
+class LiteFTUEG(FTUEG):
+    # Breaks a bunch of stuff but avoids init cost of gvecs
+    def __init__(self, nelec, beta, nbasis, rs, verbose=False, occ_tol=0.0):
+        # NOTE: nelec can be a float
+        self.nelec = nelec
+        self.beta = beta
+        self.occs = None
+        self.nocc = None
+        self.mu = None
+        self.occ_tol = occ_tol
+        self.nbas = nbasis
+        self.dim = 3
+        self.rs = rs
+        self._ulim = 0
+        self._llim = 0
+        self._rgvecs = np.zeros(0)
+        self._scf_en = 0.0
+        self.verbose = verbose
+
+        self._volume = self.nelec * (4.0/3.0) * np.pi * self.rs**3
+        self._length = self._volume ** (1. / 3.)
+        self.madelung = 2.83729747948149 / self._length
+
+        self.vcut = False
