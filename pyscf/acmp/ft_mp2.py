@@ -60,9 +60,38 @@ def damp_ft_wmat_off_diag(w_list, occs):
     return w_list
 
 
-def construct_ei_helper(beta, smooth_edep, small_gap):
+def initialize_ft_results(task):
+    """
+    Initialize all the results to zeros. Functions that assign
+    to the float-valued result keys should use addition to do
+    so, rather than assignment, because those routines could be
+    used for molecule/gamma-point calculations OR multi-kpoint
+    calculations.
+    """
+    all_tasks = ["gp", "opt", "all", "mu", "osmi"]
+    if task not in all_tasks:
+        raise ValueError("Unsupported FT-PT2 task")
+    results_keys = ["occs", "e0", "f0", "n0", "mu0"]
+    extra_keys = {
+        "gp": ["gp1", "gp2"],
+        "opt": ["gp1", "gp2", "n1", "n2", "dn0", "dn1", "dn2"],
+        "all": ["gp1", "gp2", "n1", "n2", "e1", "e2"],
+        "mu": ["mu1", "mu2", "n1", "n2", "dn0", "dn1", "dn2"],
+        "osmi": ["gp1", "gp2", "w_list"],
+    }
+    results_keys = results_keys + extra_keys[task]
+    results = {}
+    for k in results_keys:
+        if k in ["occs", "w_list"]:
+            results[k] = None
+        else:
+            results[k] = 0.0
+    return results
+
+
+def construct_ei_helper(beta, smooth_edep, small_gap, get_tderiv):
     if smooth_edep:
-        def _get_ei_helper(gap, get_tderiv=False):
+        def _get_ei_helper(gap):
             cond = gap < 0
             cond2 = numpy.abs(gap) > small_gap
             expei = numpy.exp(-beta * numpy.abs(gap))
@@ -94,9 +123,9 @@ def construct_ei_helper(beta, smooth_edep, small_gap):
                 dei[:] = -0.5 * beta
                 dei[cond2] = dexpei[cond2] / (beta * gap[cond2] * gap[cond2])
                 return ei, dei
-            return ei
+            return ei, None
     else:
-        def _get_ei_helper(gap, get_tderiv=False):
+        def _get_ei_helper(gap):
             cond2 = numpy.abs(gap) > small_gap
             ei = numpy.empty_like(gap)
             ei[:] = -0.5 * beta
@@ -105,8 +134,199 @@ def construct_ei_helper(beta, smooth_edep, small_gap):
                 dei = numpy.zeros_like(gap)
                 dei[numpy.logical_not(cond2)] = -0.5 * beta
                 return ei, dei
-            return ei
+            return ei, None
     return _get_ei_helper
+
+
+def calculate_ft_singles_(results, v1, occterms, eterms, dterms, dvterms):
+    nocc, nvir, dn_ia, dn0_ia = occterms
+    inve, dinve = eterms
+    emul_ia, nterm_ia, dnterm_ia = dterms
+    dvdu, d2vdu2, dvdeu = dvterms
+    v1ia = v1[:nocc, -nvir:]
+    v1ia2 = v1ia * v1ia.conj()
+    # factors of 2 for spin
+    if "w_list" in results:
+        tmp = numpy.sqrt(-inve * dn0_ia) * v1ia
+        w_list = results["w_list"]
+        w_list[0][:] = -lib.einsum("ia,ja->ij", tmp, tmp.conj())
+        w_list[0][:] = w_list[0] + w_list[0].T.conj()
+    elif "gp2" in results:
+        results["gp2"] += (2 * inve * v1ia2 * dn_ia).sum()
+    if "e2" in results:
+        e2 = (2 * inve * v1ia2 * dn_ia * (1 + emul_ia)).sum()
+        e2 += (2 * dinve * v1ia2 * dn_ia).sum()
+        e2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdeu)).sum()
+        results["e2"] += e2
+    if "n2" in results:
+        n2 = (-2 * inve * v1ia2 * dn_ia * nterm_ia).sum()
+        n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdu)).sum()
+        results["n2"] += n2
+    if "dn2" in results:
+        n2 = (-2 * inve * v1ia2 * dn_ia * (nterm_ia * nterm_ia + dnterm_ia)).sum()
+        n2 += (-8 * inve * dn_ia * nterm_ia * numpy.real(v1ia.conj() * dvdu)).sum()
+        n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * d2vdu2)).sum()
+        n2 += (-4 * inve * dn_ia * numpy.real(dvdu.conj() * dvdu)).sum()
+        results["dn2"] += n2
+
+
+def calculate_ft_mu_contribs_(results, beta, gp1, occs, mo_energy, nocc, n0, v1, muterms, dvdu_ii):
+    mu, mu1, mu2 = muterms
+    v1ii = numpy.diag(v1)[:nocc]
+    dndu = beta * occs[:nocc] * (1 - occs[:nocc])
+    if "gp1" in results:
+        results["gp1"] += gp1
+        if mu1 is not None:
+            results["gp1"] -= mu1 * n0
+    if "e1" in results:
+        results["e1"] += gp1 - (2 * mo_energy[:nocc] * v1ii.real * dndu).sum()
+        if mu1 is not None:
+            results["e1"] += mu1 * (2 * mo_energy[:nocc] * dndu).sum()
+    if "n1" in results:
+        results["n1"] += (-2 * v1ii.real * dndu).sum()
+    if "dn1" in results:
+        results["dn1"] = (-2 * dvdu_ii.real * dndu).sum()
+        results["dn1"] -= (2 * v1ii.real * dndu * beta * (1 - 2 * occs[:nocc])).sum()
+    if mu2 is not None:
+        if "gp2" in results:
+            # factor of 2 for nelec, factor of 1 for second deriv taylor
+            results["gp2"] -= mu1**2 * dndu.sum()
+            results["gp2"] -= mu2 * n0
+            # the term in parentheses is -1 * n1 but we might not be computing
+            # it earlier, depending on the task
+            results["gp2"] += mu1 * (2 * v1ii.real * dndu).sum()
+        if "e2" in results:
+            results["e2"] += 2 * mu1 * (2 * v1ii.real * dndu).sum()
+            results["e2"] -= 2 * mu1**2 * dndu.sum()
+            dndudb = dndu * mo_energy[:nocc] * (1 - 2 * occs[:nocc])
+            results["e2"] -= 2 * beta * mu1 * (v1ii.real * dndudb).sum()
+            results["e2"] -= 2 * (mu1 * dndu * mo_energy[:nocc] * dvdu_ii.real).sum()
+            # factor or 2 and factor 1/2 cancel again here
+            results["e2"] += beta * mu1**2 * dndudb.sum()
+            results["e2"] += 2 * mu2 * (mo_energy[:nocc] * dndu).sum()
+
+
+def get_ft_occ_terms(task, beta, occs, mo_energy, nocc, nvir):
+    dn_ia = occs[:nocc, None] * (1 - occs[None, -nvir:])
+    if task == "osmi":
+        dn0_ia = numpy.ones_like(occs[:nocc, None]) * (1 - occs[None, -nvir:])
+    else:
+        dn0_ia = dn_ia
+
+    if task == "all":
+        # Multiplier for the anomalous energy term
+        emul_ia = mo_energy[None, -nvir:] * occs[None, -nvir:]
+        emul_ia = emul_ia - mo_energy[:nocc, None] * (1 - occs[:nocc, None])
+        emul_ia[:] *= beta
+    else:
+        emul_ia = None
+
+    if task in ["opt", "all", "mu"]:
+        # Multiplier for the anomalous particle number term
+        nterm_ia = -occs[None, -nvir:] + (1 - occs[:nocc, None])
+        nterm_ia[:] *= beta
+    else:
+        nterm_ia = None
+
+    if task in ["opt", "mu"]:
+        # Multiplier for the derivative of the anomalous particle number term 
+        dnterm_ia = occs[None, -nvir:] * (1 - occs[None, -nvir:])
+        dnterm_ia = dnterm_ia + (1 - occs[:nocc, None]) * occs[:nocc, None]
+        dnterm_ia[:] *= -1 * beta ** 2
+    else:
+        dnterm_ia = None
+    
+    return dn_ia, dn0_ia, [emul_ia, nterm_ia, dnterm_ia]
+
+
+def ft_direct_sum(term, i):
+    if i is None:
+        return lib.direct_sum('ia,jb->ijab', term[0], term[1])
+    else:
+        return lib.direct_sum('jb+a->jba', term, term[i])
+
+
+def ft_spin_paired_einsum(ei, gi, i):
+    if i is None:
+        gd, gx = gi
+        t2i = gd.conj() * ei
+        return (
+            lib.einsum('ijab,ijab', t2i, gd).real * 2,
+            -lib.einsum('ijab,ijba', t2i, gx).real,
+        )
+    else:
+        t2i = gi.conj() * ei
+        return (
+            lib.einsum('jab,jab', t2i, gi) * 2,
+            -lib.einsum('jab,jba', t2i, gi),
+        )
+
+
+def add_ft_pt2_terms_(mp, results, task, ei, dei, gi, dterms, i=None):
+    # NOTE: ei is modified in addition to results
+    emul_ia, nterm_ia, dnterm_ia = dterms
+    e2_ss = e2_os = gp2_ss = gp2_os = 0
+    if task == "osmi":
+        mp.add_to_w_list_(
+            results["w_list"], gi, gi, ei, ACMP_PAIRED, invert_ei=False
+        )
+    else:
+        if "gp2" in results:
+            edi, exi = ft_spin_paired_einsum(ei, gi, i)
+            gp2_ss += edi*0.5 + exi
+            gp2_os += edi*0.5
+        if "n2" in results:
+            a2i = ft_direct_sum(nterm_ia, i)
+            ni = -ei * a2i
+            ndi, nxi = ft_spin_paired_einsum(ni, gi, i)
+            results["n2"] += ndi + nxi
+        if "dn2" in results:
+            a3i = ft_direct_sum(dnterm_ia, i)
+            ni = -ei * (a2i * a2i + a3i)
+            ndi, nxi = ft_spin_paired_einsum(ni, gi, i)
+            results["dn2"] += ndi + nxi
+        if "e2" in results:
+            ai = ft_direct_sum(emul_ia, i)
+            ei[:] *= (1 + ai)
+            ei[:] += dei
+            edi, exi = ft_spin_paired_einsum(ei, gi, i)
+            e2_ss += edi*0.5 + exi
+            e2_os += edi*0.5
+    return [e2_ss, e2_os, gp2_ss, gp2_os]
+
+
+def finalize_ft_results_(results, task, ddn0, e2_ss, e2_os, gp2_ss, gp2_os):
+    # These results might already have singles contributions,
+    # so we have to add to them. If with_singles=False,
+    # they are set to 0 above.
+    if "gp2" in results:
+        results["gp2"] = lib.tag_array(
+            gp2_ss + gp2_os + results["gp2"],
+            gp_corr_ss=gp2_ss,
+            gp_corr_os=gp2_os,
+        )
+    if "e2" in results:
+        results["e2"] = lib.tag_array(
+            e2_ss + e2_os + results["e2"],
+            e_corr_ss=e2_ss,
+            e_corr_os=e2_os,
+        )
+    if task == "mu":
+        # Regularize the denominator to stop things from exploding
+        # in the zero-T limit.
+        results["mu1"] = -1 * results["n1"] / (results["dn0"] + 1e-16)
+        results["mu2"] = results["n2"]
+        results["mu2"] += 0.5 * results["mu1"]**2 * ddn0
+        results["mu2"] += results["mu1"] * results["dn1"]
+        results["mu2"] *= -1 / (results["dn0"] + 1e-16)
+
+
+def ft_entropy_0term(beta, occs):
+    clipped_occs = numpy.clip(occs, 1e-200, 1)
+    clipped_1occs = numpy.clip(1 - occs, 1e-200, 1)
+    f0 = clipped_occs * numpy.log(clipped_occs)
+    f0 += clipped_1occs * numpy.log(clipped_1occs)
+    return 2 / beta * f0.sum()
 
 
 def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
@@ -188,17 +408,6 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         "w_list": W matrices for OSMI calculations. Contains second-order
             contributions to the grand potential, decomposed into a matrix.
     """
-    all_tasks = ["gp", "opt", "all", "mu", "osmi"]
-    results_keys = ["occs", "e0", "f0", "n0", "mu0"]
-    extra_keys = {
-        "gp": ["gp1", "gp2"],
-        "opt": ["gp1", "gp2", "n1", "n2", "dn0", "dn1", "dn2"],
-        "all": ["gp1", "gp2", "n1", "n2", "e1", "e2"],
-        "mu": ["mu1", "mu2", "n1", "n2", "dn0", "dn1", "dn2"],
-        "osmi": ["gp1", "gp2", "w_list"],
-    }
-    results_keys = results_keys + extra_keys[task]
-
     if isinstance(mu, tuple):
         assert len(mu) == 3
         mu, mu1, mu2 = mu
@@ -206,8 +415,8 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         mu1 = None
         mu2 = None
 
-    if task not in all_tasks:
-        raise ValueError("Unsupported FT-PT2 task")
+    if beta is None:
+        beta = mp.beta
 
     small_gap = 1e-10
     if mo_energy is not None or mo_coeff is not None:
@@ -215,19 +424,11 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
         # not supported when mo_energy or mo_coeff is given.
         assert (mp.frozen == 0 or mp.frozen is None)
 
-    if beta is None:
-        beta = mp.beta
-
     if eris is None:
         eris = mp.ao2mo(mo_coeff, mu, beta=beta)
 
     if mo_energy is None:
         mo_energy = eris.mo_energy
-
-    if False:  # mu1 is not None:
-        dmoe = mo_energy - mu
-    else:
-        dmoe = mo_energy
 
     occs = _fermi_smearing_occ(mu, mo_energy, 1.0 / beta)
 
@@ -235,134 +436,57 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
     nvir = eris.nvir
     eia = mo_energy[:nocc, None] - mo_energy[None, -nvir:]
 
-    clipped_occs = numpy.clip(occs, 1e-200, 1)
-    clipped_1occs = numpy.clip(1 - occs, 1e-200, 1)
+    results = initialize_ft_results(task)
+    results["occs"] = occs
+    if task == "osmi":
+        results["w_list"] = [
+            numpy.zeros((nocc, nocc)) for _ in range(mp.get_pt_list_size())
+        ]
+
     e0, gp1, v1 = mp._get_v1(mo_energy, eris.mo_coeff, occs)
+    results["e0"] = e0
+    results["f0"] = e0  # entropy term added below
+    results["mu0"] = mu
     if dv is not None:
         v1[:] += dv * numpy.identity(v1.shape[-1])
-    f0 = clipped_occs * numpy.log(clipped_occs)
-    f0 += clipped_1occs * numpy.log(clipped_1occs)
-    f0 = e0 + 2 / beta * f0.sum()
-    n0 = 2 * numpy.sum(occs)
-    results = {"e0": e0, "f0": f0, "n0": n0, "occs": occs, "mu0": mu}
-    if "dn0" in results_keys:
-        results["dn0"] = 2 * beta * numpy.sum(occs * (1 - occs))
-    if task == "mu":
-        ddn0 = 2 * beta**2 * numpy.sum(occs * (1 - occs) * (1 - 2 * occs))
 
-    if with_singles:
-        v1ia = v1[:nocc, -nvir:]
-        v1ia2 = v1ia * v1ia.conj()
+    results["f0"] += ft_entropy_0term(beta, occs)
+    n0 = 2 * numpy.sum(occs)
+    results["n0"] += n0
+    if "dn0" in results:
+        results["dn0"] += 2 * beta * numpy.sum(occs * (1 - occs))
 
     if task in ["opt", "all", "mu"]:
         dvdu, d2vdu2, dvdeu = mp._get_dv1(
-            dmoe, eris.mo_coeff, occs, beta=beta
+            mo_energy, eris.mo_coeff, occs, beta=beta
         )
         dvdu_ii = numpy.diag(dvdu)[:nocc]
         dvdu = dvdu[:nocc, -nvir:]
         d2vdu2 = d2vdu2[:nocc, -nvir:]
         dvdeu = dvdeu[:nocc, -nvir:]
-
-    v1ii = numpy.diag(v1)[:nocc]
-    dndu = beta * occs[:nocc] * (1 - occs[:nocc])
-    if "gp1" in results_keys:
-        results["gp1"] = gp1
-        if mu1 is not None:
-            results["gp1"] -= mu1 * n0
-    if "e1" in results_keys:
-        results["e1"] = gp1 - (2 * mo_energy[:nocc] * v1ii.real * dndu).sum()
-        if mu1 is not None:
-            results["e1"] += mu1 * (2 * mo_energy[:nocc] * dndu).sum()
-    if "n1" in results_keys:
-        results["n1"] = (-2 * v1ii.real * dndu).sum()
-    if "dn1" in results_keys:
-        results["dn1"] = (-2 * dvdu_ii.real * dndu).sum()
-        results["dn1"] -= (2 * v1ii.real * dndu * beta * (1 - 2 * occs[:nocc])).sum()
-
-    dn_ia = occs[:nocc, None] * (1 - occs[None, -nvir:])
-    if task == "osmi":
-        dn0_ia = numpy.ones_like(occs[:nocc, None]) * (1 - occs[None, -nvir:])
     else:
-        dn0_ia = None
+        dvdu, d2vdu2, dvdeu = [None, None, None]
+        dvdu_ii = None
 
-    if task == "all":
-        # Multiplier for the anomalous energy term
-        emul_ia = dmoe[None, -nvir:] * occs[None, -nvir:]
-        emul_ia = emul_ia - dmoe[:nocc, None] * (1 - occs[:nocc, None])
-        emul_ia[:] *= beta
+    muterms = [mu, mu1, mu2]
+    calculate_ft_mu_contribs_(results, beta, gp1, occs, mo_energy,
+                              nocc, n0, v1, muterms, dvdu_ii)
 
-    if task in ["opt", "all", "mu"]:
-        # Multiplier for the anomalous particle number term
-        nterm_ia = -occs[None, -nvir:] + (1 - occs[:nocc, None])
-        nterm_ia[:] *= beta
+    dn_ia, dn0_ia, dterms = get_ft_occ_terms(
+        task, beta, occs, mo_energy, nocc, nvir
+    )
 
-    if task in ["opt", "mu"]:
-        # Multiplier for the derivative of the anomalous particle number term 
-        dnterm_ia = occs[None, -nvir:] * (1 - occs[None, -nvir:])
-        dnterm_ia = dnterm_ia + (1 - occs[:nocc, None]) * occs[:nocc, None]
-        dnterm_ia[:] *= -1 * beta ** 2
+    get_dt = ("e2" in results)
+    _get_ei_helper = construct_ei_helper(beta, smooth_edep, small_gap, get_dt)
 
-    _get_ei_helper = construct_ei_helper(beta, smooth_edep, small_gap)
-
-    inve, dinve = _get_ei_helper(eia, True)
-
-    if task == "osmi":
-        w_list = [numpy.zeros((nocc, nocc)) for _ in range(mp.get_pt_list_size())]
-
+    eterms = _get_ei_helper(eia)
+    muterms = [mu, mu1, mu2]
+    occterms = [nocc, nvir, dn_ia, dn0_ia]
     if with_singles:
-        # factors of 2 for spin
-        if "w_list" in results_keys:
-            results["gp2"] = 0.0
-            tmp = numpy.sqrt(-inve * dn0_ia) * v1ia
-            w_list[0][:] = -lib.einsum("ia,ja->ij", tmp, tmp.conj())
-            w_list[0][:] = w_list[0] + w_list[0].T.conj()
-        elif "gp2" in results_keys:
-            results["gp2"] = (2 * inve * v1ia2 * dn_ia).sum()
-        if "e2" in results_keys:
-            e2 = (2 * inve * v1ia2 * dn_ia * (1 + emul_ia)).sum()
-            e2 += (2 * dinve * v1ia2 * dn_ia).sum()
-            e2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdeu)).sum()
-            results["e2"] = e2
-        if "n2" in results_keys:
-            n2 = (-2 * inve * v1ia2 * dn_ia * nterm_ia).sum()
-            n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdu)).sum()
-            results["n2"] = n2
-        if "dn2" in results_keys:
-            n2 = (-2 * inve * v1ia2 * dn_ia * (nterm_ia * nterm_ia + dnterm_ia)).sum()
-            n2 += (-8 * inve * dn_ia * nterm_ia * numpy.real(v1ia.conj() * dvdu)).sum()
-            n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * d2vdu2)).sum()
-            n2 += (-4 * inve * dn_ia * numpy.real(dvdu.conj() * dvdu)).sum()
-            results["dn2"] = n2
-    else:
-        if "gp2" in results_keys:
-            results["gp2"] = 0.0
-        if "e2" in results_keys:
-            results["e2"] = 0.0
-        if "n2" in results_keys:
-            results["n2"] = 0.0
-        if "dn2" in results_keys:
-            results["dn2"] = 0.0
-    if mu2 is not None:
-        if "gp2" in results_keys:
-            # factor of 2 for nelec, factor of 1 for second deriv taylor
-            results["gp2"] -= mu1**2 * dndu.sum()
-            results["gp2"] -= mu2 * n0
-            # the term in parentheses is -1 * n1 but we might not be computing
-            # it earlier, depending on the task
-            results["gp2"] += mu1 * (2 * v1ii.real * dndu).sum()
-        if "e2" in results_keys:
-            results["e2"] += 2 * mu1 * (2 * v1ii.real * dndu).sum()
-            results["e2"] -= 2 * mu1**2 * dndu.sum()
-            dndudb = dndu * dmoe[:nocc] * (1 - 2 * occs[:nocc])
-            results["e2"] -= 2 * beta * mu1 * (v1ii.real * dndudb).sum()
-            results["e2"] -= 2 * (mu1 * dndu * dmoe[:nocc] * dvdu_ii.real).sum()
-            # factor or 2 and factor 1/2 cancel again here
-            results["e2"] += beta * mu1**2 * dndudb.sum()
-            results["e2"] += 2 * mu2 * (dmoe[:nocc] * dndu).sum()
+        calculate_ft_singles_(results, v1, occterms, eterms, dterms,
+                              [dvdu, d2vdu2, dvdeu])
 
-    e2_ss = e2_os = 0
-    gp2_ss = gp2_os = 0
-    nval_count = dnval_count = 0
+    e2_ss = e2_os = gp2_ss = gp2_os = 0
 
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
@@ -373,80 +497,25 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
             gi = numpy.asarray(eris.ovov[i*nvir:(i+1)*nvir])
         gi = gi.reshape(nvir, nocc, nvir).transpose(1, 0, 2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
+        occi = lib.einsum('jb,a->jba', dn0_ia, dn_ia[i])
+        ei, dei = _get_ei_helper(ei)
+        ei[:] *= occi
+        if dei is not None:
+            dei[:] *= occi
 
-        if task == "osmi":
-            ei = _get_ei_helper(ei)
-            ei[:] *= lib.einsum('jb,a->jba', dn0_ia, dn_ia[i])
-            mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED, invert_ei=False)
-        else:
-            occi = lib.einsum('jb,a->jba', dn_ia, dn_ia[i])
-            if task == "all":
-                ei, dei = _get_ei_helper(ei, True)
-                dei *= occi
-            else:
-                ei = _get_ei_helper(ei)
-                dei = None
-            ei[:] *= occi
-            if "gp2" in results_keys:
-                t2i = gi.conj() * ei
-                edi = numpy.einsum('jab,jab', t2i, gi) * 2
-                exi = -numpy.einsum('jab,jba', t2i, gi)
-                gp2_ss += edi*0.5 + exi
-                gp2_os += edi*0.5
-            if "n2" in results_keys:
-                a2i = lib.direct_sum('jb+a->jba', nterm_ia, nterm_ia[i])
-                ni = -ei * a2i
-                ni = gi.conj() * ni
-                ndi = numpy.einsum('jab,jab', ni, gi) * 2
-                nxi = -numpy.einsum('jab,jba', ni, gi)
-                nval_count += ndi + nxi
-            if "dn2" in results_keys:
-                a3i = lib.direct_sum('jb+a->jba', dnterm_ia, dnterm_ia[i])
-                ni = -ei * (a2i * a2i + a3i)
-                ni = gi.conj() * ni
-                ndi = numpy.einsum('jab,jab', ni, gi) * 2
-                nxi = -numpy.einsum('jab,jba', ni, gi)
-                dnval_count += ndi + nxi
-            if "e2" in results_keys:
-                ai = lib.direct_sum('jb+a->jba', emul_ia, emul_ia[i])
-                ei[:] *= (1 + ai)
-                ei[:] += dei
-                t2i = gi.conj() * ei
-                edi = numpy.einsum('jab,jab', t2i, gi) * 2
-                exi = -numpy.einsum('jab,jba', t2i, gi)
-                e2_ss += edi*0.5 + exi
-                e2_os += edi*0.5
-
-    # These results might already have singles contributions,
-    # so we have to add to them. If with_singles=False,
-    # they are set to 0 above.
-    if "gp2" in results_keys:
-        results["gp2"] = lib.tag_array(
-            gp2_ss + gp2_os + results["gp2"],
-            gp_corr_ss=gp2_ss,
-            gp_corr_os=gp2_os,
-        )
-    if "n2" in results_keys:
-        results["n2"] += nval_count
-    if "dn2" in results_keys:
-        results["dn2"] += dnval_count
-    if "e2" in results_keys:
-        results["e2"] = lib.tag_array(
-            e2_ss + e2_os + results["e2"],
-            e_corr_ss=e2_ss,
-            e_corr_os=e2_os,
-        )
-    if "w_list" in results_keys:
-        results["w_list"] = [0.5 * (w + w.conj().T) for w in w_list]
+        sterms = add_ft_pt2_terms_(mp, results, task, ei, dei, gi, dterms, i=i)
+        e2_ss += sterms[0]
+        e2_os += sterms[1]
+        gp2_ss += sterms[2]
+        gp2_os += sterms[3]
 
     if task == "mu":
-        # Regularize the denominator to stop things from exploding
-        # in the zero-T limit.
-        results["mu1"] = -1 * results["n1"] / (results["dn0"] + 1e-16)
-        results["mu2"] = results["n2"]
-        results["mu2"] += 0.5 * results["mu1"]**2 * ddn0
-        results["mu2"] += results["mu1"] * results["dn1"]
-        results["mu2"] *= -1 / (results["dn0"] + 1e-16)
+        ddn0 = 2 * beta**2 * numpy.sum(occs * (1 - occs) * (1 - 2 * occs))
+    else:
+        ddn0 = None
+    if "w_list" in results:
+        results["w_list"] = [0.5 * (w + w.conj().T) for w in results["w_list"]]
+    finalize_ft_results_(results, task, ddn0, e2_ss, e2_os, gp2_ss, gp2_os)
 
     return results
 
@@ -637,6 +706,7 @@ class FTMP2Mixin:
         return mo_energy.dot(ac_occ), de0, fock - numpy.diag(mo_energy)
 
     def _get_dv1(self, mo_energy, mo_coeff, ac_occ, beta):
+        # TODO why no factor of 2 on mo_occ?
         assert beta is not None
         mo_occ = ac_occ * (1 - ac_occ) * beta
         dm = self._make_rdm1_for_dv(mo_coeff, 2 * mo_occ)

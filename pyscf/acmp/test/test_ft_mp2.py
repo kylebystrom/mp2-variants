@@ -99,6 +99,12 @@ class KnownValues(unittest.TestCase):
         mymp.kernel()
 
         print()
+        res1 = [
+            mymp.e_tot, mymp.e_free, mymp.e_corr,
+            mymp.results["e0"], mymp.results["e1"], mymp.results["e2"],
+            mymp.results["gp1"], mymp.results["gp2"],
+            mymp.results["mu1"], mymp.results["mu2"],
+        ]
         print("LOOK1", mymp.e_tot, mymp.e_free, mymp.e_corr,
               mymp.results["e0"], mymp.results["e1"], mymp.results["e2"],
               mymp.results["gp1"], mymp.results["gp2"],
@@ -110,25 +116,38 @@ class KnownValues(unittest.TestCase):
         mymp.kernel()
 
         print()
+        res2 = [
+            mymp.e_tot, mymp.e_free, mymp.e_corr,
+            mymp.results["e0"], mymp.results["e1"], mymp.results["e2"],
+            mymp.results["gp1"], mymp.results["gp2"],
+            mymp.results["mu1"], mymp.results["mu2"],
+        ]
         print("LOOK2", mymp.e_tot, mymp.e_free, mymp.e_corr,
               mymp.results["e0"], mymp.results["e1"], mymp.results["e2"],
               mymp.results["gp1"], mymp.results["gp2"],
               mymp.results["mu1"], mymp.results["mu2"])
         print(mymp.mu_opt)
         print()
+        for r1, r2 in zip(res1, res2):
+            assert_allclose(r1, r2, atol=1e-7, rtol=0)
 
         mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix=None,
                           ecorr_method="analytical")
         mymp.kernel()
         print(mymp.mu_opt)
 
+        res1 = [mymp.e_tot, mymp.e_corr]
         print(mymp.e_tot, mymp.e_corr)
 
         mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix=None,
                           ecorr_method="finite_difference")
         mymp.kernel()
 
+        res2 = [mymp.e_tot, mymp.e_corr]
         print(mymp.e_tot, mymp.e_corr)
+
+        for r1, r2 in zip(res1, res2):
+            assert_allclose(r1, r2, atol=1e-7, rtol=0)
 
         mymp = make_ftmp2(MP2(ftmf), beta=beta, particle_fix="pt",
                           ecorr_method="finite_difference")
@@ -201,6 +220,7 @@ class KnownValues(unittest.TestCase):
         mymp.kernel()
         mymp.with_singles = True
         mymp.kernel()
+        et, ec = mymp.e_tot, mymp.e_corr
 
         ftmf = smearing(mf, sigma=1/beta)
         ftmf.kernel()
@@ -211,11 +231,21 @@ class KnownValues(unittest.TestCase):
                           particle_fix=None,
                           ecorr_method="finite_difference")
         mymp.kernel()
+
+        assert_allclose(mymp.e_tot, et, atol=1e-5, rtol=0)
+        assert_allclose(mymp.e_corr, ec, atol=1e-5, rtol=0)
+
         mymp.with_singles = False
         mymp.kernel()
+
+        # TODO test no singles
+
         mymp.particle_fix = "pt"
         mymp.with_singles = True
         mymp.kernel()
+
+        assert_allclose(mymp.e_tot, et, atol=1e-5, rtol=0)
+        assert_allclose(mymp.e_corr, ec, atol=1e-5, rtol=0)
 
         print("CHECK", mf.e_tot, ftmf.e_tot, ftmf.e_free, ftmf.e_zero)
         if True:

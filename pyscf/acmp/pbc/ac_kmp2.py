@@ -17,6 +17,27 @@ from pyscf.pbc.dft.gen_grid import BeckeGrids
 WITH_T2 = getattr(__config__, 'mp_mp2_with_t2', True)
 
 
+def _mp2_check_mem(mp, nkpts, nocc, nvir):
+    with_df_ints = mp.with_df_ints and isinstance(mp._scf.with_df, df.GDF)
+    mem_avail = mp.max_memory - lib.current_memory()[0]
+    mem_usage = (nkpts * (nocc * nvir)**2) * 16 / 1e6
+    if with_df_ints:
+        mydf = mp._scf.with_df
+        if mydf.auxcell is None:
+            # Calculate naux based on precomputed GDF integrals
+            naux = mydf.get_naoaux()
+        else:
+            naux = mydf.auxcell.nao_nr()
+
+        mem_usage += (nkpts**2 * naux * nocc * nvir) * 16 / 1e6
+    # if with_t2:
+    #     mem_usage += (nkpts**3 * (nocc * nvir)**2) * 16 / 1e6
+    if mem_usage > mem_avail:
+        raise MemoryError('Insufficient memory! MP2 memory usage %d MB (currently available %d MB)'
+                          % (mem_usage, mem_avail))
+    return with_df_ints
+
+
 def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     """Computes k-point RMP2 energy.
 
@@ -39,30 +60,10 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     nmo = mp.nmo
     nocc = mp.nocc
     nocc_list = mp.get_nocc(per_kpoint=True)
-    # nocc_max = np.max(nocc_list)
-    # nocc_min = np.min(nocc_list)
-    # nvir_max = nmo - nocc_min
     nvir = nmo - nocc
     nkpts = mp.nkpts
 
-    with_df_ints = mp.with_df_ints and isinstance(mp._scf.with_df, df.GDF)
-
-    mem_avail = mp.max_memory - lib.current_memory()[0]
-    mem_usage = (nkpts * (nocc * nvir)**2) * 16 / 1e6
-    if with_df_ints:
-        mydf = mp._scf.with_df
-        if mydf.auxcell is None:
-            # Calculate naux based on precomputed GDF integrals
-            naux = mydf.get_naoaux()
-        else:
-            naux = mydf.auxcell.nao_nr()
-
-        mem_usage += (nkpts**2 * naux * nocc * nvir) * 16 / 1e6
-    # if with_t2:
-    #     mem_usage += (nkpts**3 * (nocc * nvir)**2) * 16 / 1e6
-    if mem_usage > mem_avail:
-        raise MemoryError('Insufficient memory! MP2 memory usage %d MB (currently available %d MB)'
-                          % (mem_usage, mem_avail))
+    with_df_ints = _mp2_check_mem(mp, nkpts, nocc, nvir)
 
     eia = np.zeros((nocc,nvir))
     eijab = np.zeros((nocc,nocc,nvir,nvir))
@@ -72,12 +73,6 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
     oovv_ij = np.zeros((nkpts,nocc,nocc,nvir,nvir), dtype=mo_coeff[0].dtype)
     mo_e_o = [mo_energy[k][:nocc] for k in range(nkpts)]
     mo_e_v = [mo_energy[k][nocc:] for k in range(nkpts)]
-
-    # oovv_ij_buf = np.empty(nkpts * nocc_max * nocc_max * nvir_max * nvir_max,
-    #                        dtype=mo_coeff[0].dtype)
-    # oovv_ij = [None] * nkpts
-    # mo_e_o = [mo_energy[k][:nocc_list[k]] for k in range(nkpts)]
-    # mo_e_v = [mo_energy[k][nocc_list[k]:] + 1e-7 for k in range(nkpts)]
 
     # Get location of non-zero/padded elements in occupied and virtual space
     nonzero_opadding, nonzero_vpadding = kmp2.padding_k_idx(mp, kind="split")
