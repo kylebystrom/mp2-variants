@@ -2,6 +2,8 @@ from pyscf.mp.mp2 import MP2
 from pyscf.acmp.ft_mp2 import FTMP2
 from pyscf import gto, scf
 from pyscf.scf.addons import smearing
+from pyscf.acmp import mp2_numint as funcs
+from pyscf.acmp.ac_interpolators import MOD_ISI_ACW, get_interpolator
 
 
 basis = "def2-tzvp"

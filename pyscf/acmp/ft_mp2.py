@@ -27,9 +27,10 @@ from pyscf.mp.mp2 import MP2, MP2Base, _ChemistsERIs, _mem_usage, _ao2mo_ovov
 from pyscf import ao2mo
 from pyscf.scf.addons import _smearing_optimize, _fermi_smearing_occ
 from pyscf.acmp.ac_mp2 import ACMP_PAIRED, concatenate_w, ACMP2
+import ctypes
 
 WITH_T2 = getattr(__config__, 'mp_mp2_with_t2', True)
-
+lacmp = lib.load_library("libacmp")
 
 def make_ftmp2(mymp, beta=1, mu0=None, occ_tol=0, mu_tol=1e-6,
                particle_fix=None, ecorr_method="analytical",
@@ -92,6 +93,28 @@ def initialize_ft_results(task):
 def construct_ei_helper(beta, smooth_edep, small_gap, get_tderiv):
     if smooth_edep:
         def _get_ei_helper(gap):
+            if False: # not get_tderiv and gap.ndim == 4 and gap.transpose(0, 2, 1, 3).flags.c_contiguous:
+                size = gap.size
+                # assert gap.flags.c_contiguous
+                ei = numpy.empty_like(gap.transpose(0, 2, 1, 3), order="C")
+                lacmp.ft_ei_helper_vector(
+                    ei.ctypes,
+                    gap.ctypes,
+                    ctypes.c_double(beta),
+                    ctypes.c_size_t(size),
+                )
+                return ei.transpose(0, 2, 1, 3), None
+            elif False:#not get_tderiv and gap.flags.c_contiguous:
+                size = gap.size
+                # assert gap.flags.c_contiguous
+                ei = numpy.empty_like(gap, order="C")
+                lacmp.ft_ei_helper_vector(
+                    ei.ctypes,
+                    gap.ctypes,
+                    ctypes.c_double(beta),
+                    ctypes.c_size_t(size),
+                )
+                return ei, None
             cond = gap < 0
             cond2 = numpy.abs(gap) > small_gap
             expei = numpy.exp(-beta * numpy.abs(gap))
@@ -267,9 +290,14 @@ def add_ft_pt2_terms_(mp, results, task, ei, dei, gi, dterms, i=None):
     emul_ia, nterm_ia, dnterm_ia = dterms
     e2_ss = e2_os = gp2_ss = gp2_os = 0
     if task == "osmi":
-        mp.add_to_w_list_(
-            results["w_list"], gi, gi, ei, ACMP_PAIRED, invert_ei=False
-        )
+        if i is None:
+            mp.add_to_w_list_(
+                results["w_list"], gi[0], gi[1], ei, ACMP_PAIRED, invert_ei=False
+            )
+        else:
+            mp.add_to_w_list_(
+                results["w_list"], gi, gi, ei, ACMP_PAIRED, invert_ei=False
+            )
     else:
         if "gp2" in results:
             edi, exi = ft_spin_paired_einsum(ei, gi, i)
@@ -777,7 +805,8 @@ class FTMP2Mixin:
 
         cput0 = cput1 = (logger.process_clock(), logger.perf_counter())
 
-        self.dump_flags()
+        # TODO fix dump_flags
+        # self.dump_flags()
 
         self.e_hf = self.get_e_hf(mo_coeff=mo_coeff)
 

@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <complex.h>
-#include "blas.h"
+#include "vhf/fblas.h"
 
 #define MIN(X,Y)        ((X)<(Y)?(X):(Y))
 #define MAX(X,Y)        ((X)>(Y)?(X):(Y))
@@ -653,6 +653,14 @@ static inline double get_ei_ft(double gap, double beta)
     return ei;
 }
 
+void ft_ei_helper_vector(double *out, double *gap, double beta, size_t size)
+{
+#pragma omp parallel for schedule(static)
+    for (size_t i = 0; i < size; i++) {
+        out[i] = get_ei_ft(gap[i], beta);
+    }
+}
+
 void ecorr_mp2_vec_ft(const int nocc, int *occ_gvecs, double *f_occ,
                       const int nvir, int *vir_gvecs, double *fm_vir,
                       double *coulomb_ov, double *eig_o, double *eig_v,
@@ -731,9 +739,9 @@ void contract_df_eris(double **oovv_k, double **Lovi_k, double **Lovj_k,
         kb = kbs[ka];
         i = kia % ni;
         Lovi = Lovi_k[ka] + i * nvir_list[ka] * naux;
-        Lovj = Lovi_k[kb];
+        Lovj = Lovj_k[kb];
         ldc = nj * nvir_list[kb];
-        oovv = oovv_k[ka] + i * nvir_list[ka] * nj * ldc;
+        oovv = oovv_k[ka] + i * nvir_list[ka] * ldc;
         dgemm_(&transa, &transb, &ldc, nvir_list + ka, &naux, &fac, Lovj,
                &naux, Lovi, &naux, &zero, oovv, &ldc);
     }
@@ -753,18 +761,43 @@ void zcontract_df_eris(double complex **oovv_k, double complex **Lovi_k,
     double complex zero = 0.0;
     char transa = 'T';
     char transb = 'N';
-    double complex zfac = fac;
+    double complex zfac = (double complex) fac;
 #pragma omp for schedule(static)
     for (kia = 0; kia < nkia; kia++) {
         ka = kia / ni;
         kb = kbs[ka];
         i = kia % ni;
         Lovi = Lovi_k[ka] + i * nvir_list[ka] * naux;
-        Lovj = Lovi_k[kb];
+        Lovj = Lovj_k[ka];
         ldc = nj * nvir_list[kb];
-        oovv = oovv_k[ka] + i * nvir_list[ka] * nj * ldc;
-        zgemm_(&transa, &transb, &ldc, nvir_list + ka, &naux, &fac, Lovj,
+        oovv = oovv_k[ka] + i * nvir_list[ka] * ldc;
+        zgemm_(&transa, &transb, &ldc, nvir_list + ka, &naux, &zfac, Lovj,
                &naux, Lovi, &naux, &zero, oovv, &ldc);
     }
 }
 }
+
+/*
+void zcontract_df_eris(double complex **oovv_k, double complex **Lovi_k,
+                       double complex **Lovj_k,
+                       int *kbs, int *nvir_list, int nk, int ni, int nj,
+                       int naux, double fac)
+{
+    int ka, kia, ldc, kb;
+    double complex *Lovj, *Lovi, *oovv;
+    double complex zero = 0.0;
+    char transa = 'T';
+    char transb = 'N';
+    double complex zfac = (double complex) fac;
+    for (ka = 0; ka < nk; ka++) {
+        kb = kbs[ka];
+        Lovi = Lovi_k[ka];
+        Lovj = Lovj_k[ka];
+        ldc = nj * nvir_list[kb];
+        kia = nvir_list[ka] * ni;
+        oovv = oovv_k[ka];
+        zgemm_(&transa, &transb, &ldc, &kia, &naux, &zfac, Lovj,
+               &naux, Lovi, &naux, &zero, oovv, &ldc);
+    }
+}
+*/

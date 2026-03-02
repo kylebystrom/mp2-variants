@@ -65,7 +65,8 @@ def get_k_potential(my_ueg, occ_gvecs, other_gvecs, occs=None):
         ctypes.c_double(my_ueg._volume),
     ]
     if not my_ueg.vcut:
-        args.append(ctypes.c_double(my_ueg.madelung))
+        # args.append(ctypes.c_double(my_ueg.madelung))
+        args.append(ctypes.c_double(0))
     if occs is None:
         if my_ueg.vcut:
             mylib.get_vk_vcut(*args)
@@ -92,7 +93,8 @@ def get_ks_exx(my_ueg, occ_gvecs, occs):
         ctypes.c_int(nocc),
         ctypes.c_double(my_ueg._length),
         ctypes.c_double(my_ueg._volume),
-        ctypes.c_double(my_ueg.madelung),
+        #ctypes.c_double(my_ueg.madelung),
+        ctypes.c_double(0),
         occs.ctypes.data_as(ctypes.c_void_p),
     ]
     mylib.get_vk_ks_ft(*args)
@@ -128,7 +130,10 @@ def get_gp1_v1(occs, nocc, eig_o, nelec0, beta, nbas, rs0, occ_tol,
 
     t3 = time.monotonic()
     v1 = (hcore - eig_o)
+    # NOTE account for Madelung
+    v1 -= 0.5 * tmp_ueg.madelung
     e1 = ((v1 + 0.5 * veff) * occs).sum() / n0
+    # e1 -= 0.5 * tmp_ueg.madelung * (occs**2).sum() / n0
     v1 += veff
     if apply_ks_dv:
         dndu = 2 * beta * occs * (1 - occs)
@@ -196,6 +201,8 @@ def get_gp2(STYLE, method, nelec0, beta, rs0, nbas, occs, nocc, nvir,
         my_ueg.occs = occs
         my_ueg.nocc = nocc
         eigk = -0.5 * get_k_potential(my_ueg, g_o, g_o, occs)[:nocc]
+        if True:
+            eigk[:] -= 0.5 * my_ueg.madelung * occs[:nocc]
         t4 = time.monotonic()
         res = post_process_ac(my_ueg, method, eigk, res, g_o=g_o)
         t5 = time.monotonic()
@@ -254,7 +261,8 @@ def run_ueg_calc(**settings):
         ctypes.c_int(ekins_v.size),
         ctypes.c_double(my_ueg._length),
         ctypes.c_double(my_ueg._volume),
-        ctypes.c_double(my_ueg.madelung),
+        # ctypes.c_double(my_ueg.madelung),
+        ctypes.c_double(0),
     ]
     assert not my_ueg.vcut
     mylib.get_coulomb_ov_nocut_ft(*args)
@@ -349,9 +357,11 @@ def run_ueg_calc(**settings):
         e_zero = 0.5 * (e_free + e_tot)
         e0_zero = 0.5 * (e0 + f0)
         e1_zero = e0_zero + 0.5 * (e1 + gp1)
+        mterm1 = my_ueg.madelung * (my_ueg.occs**2).sum() / my_ueg.occs.sum()
         return numpy.array([e0, e1, e2, e_tot, e_free, e_zero,
                             kin_en, e0_zero, e1_zero, my_ueg.madelung,
-                            exx_hf, exx_ks, dexx_hf, dexx_ks])
+                            exx_hf, exx_ks, dexx_hf, dexx_ks,
+                            mterm1])
         """
         e_free = (e0 + gp1 + gp2)
         e_tot = e0 + e1 + e2
