@@ -106,15 +106,14 @@ def construct_ei_helper(beta, smooth_edep, small_gap, get_tderiv):
                 return ei.transpose(0, 2, 1, 3), None
             elif False:#not get_tderiv and gap.flags.c_contiguous:
                 size = gap.size
+                assert gap.dtype == numpy.float64
                 # assert gap.flags.c_contiguous
-                ei = numpy.empty_like(gap, order="C")
-                lacmp.ft_ei_helper_vector(
-                    ei.ctypes,
-                    gap.ctypes,
+                lacmp.ft_ei_helper_vector2(
+                    gap.ctypes.data_as(ctypes.c_void_p),
                     ctypes.c_double(beta),
                     ctypes.c_size_t(size),
                 )
-                return ei, None
+                return gap, None
             cond = gap < 0
             cond2 = numpy.abs(gap) > small_gap
             expei = numpy.exp(-beta * numpy.abs(gap))
@@ -191,6 +190,13 @@ def calculate_ft_singles_(results, v1, occterms, eterms, dterms, dvterms):
         n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * d2vdu2)).sum()
         n2 += (-4 * inve * dn_ia * numpy.real(dvdu.conj() * dvdu)).sum()
         results["dn2"] += n2
+
+
+def calculate_n1_dn0_for_ks(beta, nocc, occs, v1):
+    dndu = beta * occs * (1 - occs)
+    dn0 = 2 * dndu.sum()
+    n1 = (-2 * numpy.diag(v1) * dndu).sum()
+    return n1, dn0
 
 
 def calculate_ft_mu_contribs_(results, beta, gp1, occs, mo_energy, nocc, n0, v1, muterms, dvdu_ii):
@@ -475,6 +481,9 @@ def gc_kernel(mp, mo_energy=None, mo_coeff=None, eris=None, mu=None,
     results["e0"] = e0
     results["f0"] = e0  # entropy term added below
     results["mu0"] = mu
+    if mp.particle_fix == "ks" and dv is None:
+        _n1, _dn0 = calculate_n1_dn0_for_ks(beta, nocc, occs, v1)
+        dv = _n1 / (_dn0 + 1e-16)
     if dv is not None:
         v1[:] += dv * numpy.identity(v1.shape[-1])
 
@@ -633,6 +642,11 @@ class FTMP2Mixin:
                 "dv2": Compute the first-order shift in potential that
                     preserves the particle number and apply it to the
                     singles term in the PT expansion.
+                "ks": Applies the KS potential shift that preserves
+                    particle number to first order to the singles term
+                    in the PT expansion. Should have the same effect as
+                    dv2, but faster because it avoid a full extra
+                    gc_kernel() call.
                 "iter": Iteratively solve for the chemical potential for
                     which the expectation value of the particle number
                     at the PT2 level is equal to the number of electrons
@@ -678,7 +692,7 @@ class FTMP2Mixin:
         self.mu0 = mu0
         self.occ_tol = occ_tol
         self.mu_tol = mu_tol
-        if particle_fix not in [None, "pt", "dv", "dv2", "iter", "iter_fd"]:
+        if particle_fix not in [None, "pt", "dv", "dv2", "ks", "iter", "iter_fd"]:
             raise ValueError("Unsupported particle_fix={}".format(particle_fix))
         self.particle_fix = particle_fix
         if ecorr_method not in ["zeroth_order", "first_order", "analytical",
@@ -808,6 +822,8 @@ class FTMP2Mixin:
         # TODO fix dump_flags
         # self.dump_flags()
 
+        if mo_coeff is None:
+            mo_coeff = self.mo_coeff
         self.e_hf = self.get_e_hf(mo_coeff=mo_coeff)
 
         cput1 = log.timer('ehf', *cput1)
@@ -890,7 +906,7 @@ class FTMP2Mixin:
                 raise RuntimeError("Chemical potential not converged!")
         else:
             # keep chemical potential fixed as the initial mu
-            assert self.particle_fix in [None, "dv", "dv2"]
+            assert self.particle_fix in [None, "dv", "dv2", "ks"]
             results = {}
 
         if self.ecorr_method == "zeroth_order":
@@ -902,6 +918,10 @@ class FTMP2Mixin:
         elif self.ecorr_method == "first_order":
             raise NotImplementedError
         elif self.ecorr_method == "analytical":
+            if self.particle_fix == "ks":
+                raise NotImplementedError(
+                    "Analytical entropy/chempot term with ks particle fix."
+                )
             results.update(_call_kernel(mu, self.beta, "all"))
             self._f_tot = results["f0"] + results["gp1"] + results["gp2"]
             if isinstance(mu, tuple):
@@ -917,7 +937,7 @@ class FTMP2Mixin:
             if "gp1" not in results or "gp2" not in results:
                 results.update(_call_kernel(mu, self.beta, "gp"))
 
-            if self.particle_fix in ["dv", "dv2"]:
+            if self.particle_fix in ["dv", "dv2", "ks"]:
                 mu1_term = mu2_term = 0
             elif isinstance(mu, tuple):
                 # particle number is fixed by mu is not
@@ -1005,6 +1025,10 @@ class FTMP2Mixin:
             else:
                 raise NotImplementedError("Non-canonical")
         else:
+            if mo_coeff is not None:
+                print(len(mo_coeff), len(mp.mo_occ))
+            else:
+                print("NO MO")
             dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
             mf = mp._scf.to_hf()
             vhf = mf.get_veff(mf.mol, dm)

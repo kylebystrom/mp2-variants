@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <complex.h>
 #include "vhf/fblas.h"
+#include <omp.h>
 
 #define MIN(X,Y)        ((X)<(Y)?(X):(Y))
 #define MAX(X,Y)        ((X)>(Y)?(X):(Y))
@@ -655,10 +656,42 @@ static inline double get_ei_ft(double gap, double beta)
 
 void ft_ei_helper_vector(double *out, double *gap, double beta, size_t size)
 {
-#pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < size; i++) {
-        out[i] = get_ei_ft(gap[i], beta);
+    if (out != NULL) {
+#pragma omp parallel for
+        for (size_t i = 0; i < size; i++) {
+            out[i] = get_ei_ft(gap[i], beta);
+        }
+    } else {
+#pragma omp parallel for
+        for (size_t i = 0; i < size; i++) {
+            gap[i] = get_ei_ft(gap[i], beta);
+        }
     }
+}
+
+void ft_ei_helper_vector2(double *gaps, double beta, size_t size)
+{
+#pragma omp parallel
+{
+    const int nthread = omp_get_num_threads();
+    const int ithread = omp_get_thread_num();
+    size_t i;
+    const size_t i0 = (ithread * size) / nthread;
+    const size_t i1 = MIN(((ithread + 1) * size) / nthread, size);
+    double gap, expei, ei;
+    int cond, cond2;
+    // NOTE: cond2 in denominators is to prevent nan's since 0 * nan = nan
+    for (i = i0; i < i1; i++) {
+        gap = gaps[i];
+        cond = gap < 0;
+        cond2 = fabs(gap) > 1e-10;
+        expei = exp(-beta * fabs(gap));
+        ei = cond2 / (gap + (1 - cond2)) - 0.5 * (1 - cond2) * beta;
+        expei = (cond * (expei * (1 - expei)) + (1 - cond) * (expei - 1)) / (1 + expei * expei);
+        ei += cond2 * ((2 + beta * beta * gap * gap) * expei / (beta * gap * gap + (1 - cond2)));
+        gaps[i] = ei;
+    }
+}
 }
 
 void ecorr_mp2_vec_ft(const int nocc, int *occ_gvecs, double *f_occ,
@@ -739,7 +772,7 @@ void contract_df_eris(double **oovv_k, double **Lovi_k, double **Lovj_k,
         kb = kbs[ka];
         i = kia % ni;
         Lovi = Lovi_k[ka] + i * nvir_list[ka] * naux;
-        Lovj = Lovj_k[kb];
+        Lovj = Lovj_k[ka];
         ldc = nj * nvir_list[kb];
         oovv = oovv_k[ka] + i * nvir_list[ka] * ldc;
         dgemm_(&transa, &transb, &ldc, nvir_list + ka, &naux, &fac, Lovj,
@@ -771,9 +804,102 @@ void zcontract_df_eris(double complex **oovv_k, double complex **Lovi_k,
         Lovj = Lovj_k[ka];
         ldc = nj * nvir_list[kb];
         oovv = oovv_k[ka] + i * nvir_list[ka] * ldc;
+        // TODO account for possible integer overflow in sizes.
         zgemm_(&transa, &transb, &ldc, nvir_list + ka, &naux, &zfac, Lovj,
                &naux, Lovi, &naux, &zero, oovv, &ldc);
     }
+}
+}
+
+void zsetup_t2(double complex **oovv_k, double complex **elist_k,
+               double **eia_k, double **ejb_k,
+               double **oia_k, double **ojb_k,
+               int *kbs, int *nvir_list, int nk, int ni, int nj,
+               double beta)
+{
+#pragma omp parallel
+{
+    int ka, i, kia, ldc, kb;
+    const int nkia = nk * ni;
+    double complex *oovv;
+    double complex *elist;
+    double *eia, *ejb, *oia, *ojb;
+    int a, jb;
+    double tmp;
+#pragma omp for schedule(static)
+    for (kia = 0; kia < nkia; kia++) {
+        ka = kia / ni;
+        kb = kbs[ka];
+        i = kia % ni;
+        eia = eia_k[ka] + i * nvir_list[ka];
+        oia = oia_k[ka] + i * nvir_list[ka];
+        ejb = ejb_k[ka];
+        ojb = ojb_k[ka];
+        ldc = nj * nvir_list[kb];
+        oovv = oovv_k[ka] + i * nvir_list[ka] * ldc;
+        elist = elist_k[ka] + i * nvir_list[ka] * ldc;
+        for (a = 0; a < nvir_list[ka]; a++) {
+            for (jb = 0; jb < ldc; jb++) {
+                tmp = eia[a] + ejb[jb];
+                tmp = get_ei_ft(tmp, beta);
+                tmp *= oia[a] * ojb[jb];
+                elist[a * ldc + jb] = tmp * conj(oovv[a * ldc + jb]);
+            }
+        }
+    }
+}
+}
+
+void zw_osmi(double complex *out, double complex **oovv_k,
+             double complex **t2list_k,
+             int *kbs, int *nvir_list, int nk, int ni, int nj,
+             size_t bufsize)
+{
+#pragma omp parallel
+{
+    int ka, i, kia, ldc, kb;
+    const int nkia = nk * ni;
+    double complex *t2list;
+    double complex *oovva;
+    double complex *oovvb;
+    char trans = 'T';
+    int onei = 1;
+    double complex oned = 1.0;
+    int najb;
+    int j, a, b;
+    double complex *oovv = (double complex *) malloc(bufsize * sizeof(double complex));
+    double complex *_out = (double complex *) calloc(ni * ni, sizeof(double complex));
+#pragma omp for schedule(static)
+    for (kia = 0; kia < nkia; kia++) {
+        ka = kia / ni;
+        kb = kbs[ka];
+        i = kia % ni;
+        t2list = t2list_k[ka];
+        ldc = nj * nvir_list[kb];
+        oovva = oovv_k[ka] + i * nvir_list[ka] * ldc;
+        oovvb = oovv_k[kb] + i * nvir_list[ka] * ldc;
+        najb = nvir_list[ka] * nj * nvir_list[kb];
+        for (j = 0; j < nj; j++) {
+            for (a = 0; a < nvir_list[ka]; a++) {
+                for (b = 0; b < nvir_list[kb]; b++) {
+                    oovv[a * ldc + j * nvir_list[kb] + b] =
+                        oovva[a * ldc + j * nvir_list[kb] + b]
+                        -0.5 * oovvb[(b * nj + j) * nvir_list[ka] + a];
+                }
+            }
+        }
+        // TODO account for possible integer overflow
+        zgemv_(&trans, &najb, &ni, &oned, t2list, &najb, oovv,
+               &onei, &oned, _out + i * ni, &onei);
+    }
+    free(oovv);
+#pragma omp critical
+{
+    for (i = 0; i < ni * ni; i++) {
+        out[i] += _out[i];
+    }
+}
+    free(_out);
 }
 }
 

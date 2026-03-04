@@ -35,7 +35,7 @@ atom = ase_atoms_to_pyscf(struct)
 df_codes = [("GGA", funcs.gga_pch_winfp_v2)]
 silim = ("GGA", funcs.gga_pch_winf_v2)
 acw = MOD_ISI_ACW()
-interpolator = get_interpolator(acw=acw, mode="E")
+interpolator = get_interpolator(acw=acw, mode="M")
 
 cell = gto.M(
     a=struct.cell,
@@ -70,7 +70,7 @@ mypt = make_ftmp2(
     mypt,
     beta=beta,
     ecorr_method="finite_difference",
-    particle_fix="dv2",
+    particle_fix="ks",
     with_singles=True,
 )
 mypt.kernel()
