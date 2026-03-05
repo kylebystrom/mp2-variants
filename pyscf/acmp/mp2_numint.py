@@ -467,6 +467,87 @@ def mgga_r2scan_v2_winfpp_denom(rho, small_rho=1e-9):
     res = mgga_r2scan_winf_exp2(rho, small_rho)
     return 2 * res[2] - 3 * res[1]**2 / res[0]
 
+class EPCHelper:
+    # https://doi.org/10.1103/76sy-8bz4
+    def __init__(self, small_rho=1e-9):
+        self.A = -1.451
+        self.a1 = 0.1
+        self.a2 = 0.9342
+        self.a3 = 0.22447
+        self.kappa = 0.491
+        self.p = 6.65
+        self.mui = 0.14
+
+        self.C = 1.535
+        self.b1 = 0.04865
+        self.b2 = 4.3217
+        self.b3 = 16.581
+        self.pp = 11.0
+        self.muip = 0.491
+
+        self.small_rho = small_rho
+
+    def f1(self, s2):
+        return self.a1 + self.a2 / (1 + self.a3 * s2**4)
+
+    def f0(self, s2):
+        mks = self.mui / self.kappa * s2
+        f = 1 - self.kappa + self.kappa
+        f /= (1 + mks + mks * mks)
+        return f
+
+    def f(self, s2, z):
+        f0 = self.f0(s2)
+        f1 = self.f1(s2)
+        return f0 + (z * f1 - f0) * z**(self.p)
+
+    def f1p(self, s2, zeta):
+        res = self.b1 + (self.b1 + self.b2 * s2) * numpy.exp(-self.b3 * s2**3)
+        return res * (1 - zeta**10)
+
+    def f0p(self, s2):
+        res = 1 + (self.muip + 1) * s2
+        return res / (1 + s2)
+
+    def fp(self, s2, z, zeta):
+        f0 = self.f0p(s2)
+        f1 = self.f1p(s2, zeta)
+        return f0 + (z**self.pp * f1 - f0) * z * z
+
+    def get_rszz(self, rho):
+        sigma = numpy.einsum("xg,xg->g", rho[1:4], rho[1:4])
+        s2 = sigma / rho[0]**(8.0 / 3) / 2**(2.0 / 3)
+        s2 /= 4 * (3 * numpy.pi**2)**(2.0 / 3)
+        tauw = sigma / (8 * rho[0])
+        tau = rho[4]
+        z = tauw / tau
+        # no order of limits problem, so when tau is small we set z to 1
+        # tauw is also small if tauw is small.
+        z[tau < self.small_rho] = 1.0
+        return rho[0], s2, z, 0
+
+    def compute_f(self, rho):
+        res = numpy.zeros_like(rho[0])
+        cond = rho[0] > self.small_rho
+        rho, s2, z, zeta = self.get_rszz(rho[:, cond])
+        res[cond] = self.A * rho**(1.0 / 3) * self.f(s2, z)
+        return res
+
+    def compute_fp(self, rho):
+        res = numpy.zeros_like(rho[0])
+        cond = rho[0] > self.small_rho
+        rho, s2, z, zeta = self.get_rszz(rho[:, cond])
+        res[cond] = self.C * rho**0.5 * self.fp(s2, z, zeta)
+        return res
+
+
+def mgga_epc_winf(rho, small_rho=1e-9):
+    return EPCHelper(small_rho).compute_f(rho)
+
+
+def mgga_epc_winfp(rho, small_rho=1e-9):
+    return EPCHelper(small_rho).compute_fp(rho)
+
 
 def nr_rmp2(ni, mol, grids, xc_code, dms, relativity=0, hermi=1,
             max_memory=2000, verbose=None):

@@ -13,7 +13,7 @@ from pyscf.acmp.pbc.ft_kmp2 import make_ftmp2
 from pyscf.acmp.pbc.ac_kmp2 import ACKMP2
 from pyscf.pbc.scf.addons import smearing
 from pyscf.acmp import mp2_numint as funcs
-from pyscf.acmp.ac_interpolators import MOD_ISI_ACW, get_interpolator
+from pyscf.acmp.ac_interpolators import MOD_ISI_ACW, MMISI_ACW, get_interpolator
 import sys
 
 
@@ -32,9 +32,12 @@ struct = ase.io.read("Li.cif")
 struct = struct * [n, n, n]
 atom = ase_atoms_to_pyscf(struct)
 
-df_codes = [("GGA", funcs.gga_pch_winfp_v2)]
-silim = ("GGA", funcs.gga_pch_winf_v2)
-acw = MOD_ISI_ACW()
+#df_codes = [("GGA", funcs.gga_pch_winfp_v2)]
+#silim = ("GGA", funcs.gga_pch_winf_v2)
+df_codes = [("MGGA", funcs.mgga_epc_winfp)]
+silim = ("MGGA", funcs.mgga_epc_winf)
+# acw = MOD_ISI_ACW()
+acw = MMISI_ACW([0.085])
 interpolator = get_interpolator(acw=acw, mode="M")
 
 cell = gto.M(
@@ -55,7 +58,7 @@ kpts = cell.make_kpts(
     #space_group_symmetry=True,
     #time_reversal_symmetry=True,
 )
-beta = 200
+beta = 1000
 kmf = smearing(scf.KRKS(cell, kpts, xc="PBE"), sigma=1/beta)
 kmf = kmf.density_fit()
 ehf = kmf.kernel()
@@ -77,6 +80,8 @@ mypt.kernel()
 print("KMP2 energy (per unit cell) =", mypt.e_tot)
 t1 = time.monotonic()
 print("MP2 time", t1 - t0)
+
+print(mypt.e_hf)
 
 #exit()
 #mykmp = KappaRMP2(mf)

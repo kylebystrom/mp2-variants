@@ -684,7 +684,7 @@ void ft_ei_helper_vector2(double *gaps, double beta, size_t size)
     for (i = i0; i < i1; i++) {
         gap = gaps[i];
         cond = gap < 0;
-        cond2 = fabs(gap) > 1e-10;
+        cond2 = fabs(gap) > 1e-8;
         expei = exp(-beta * fabs(gap));
         ei = cond2 / (gap + (1 - cond2)) - 0.5 * (1 - cond2) * beta;
         expei = (cond * (expei * (1 - expei)) + (1 - cond) * (expei - 1)) / (1 + expei * expei);

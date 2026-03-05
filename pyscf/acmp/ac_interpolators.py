@@ -420,6 +420,25 @@ class MOD_ISI_ACW(SPL_ACW):
         return alpha * x / (1 + alpha**0.5 * y + alpha * z)
 
 
+class MMISI_ACW(MOD_ISI_ACW):
+    def compute_cache(self, w_list):
+        super().compute_cache(w_list)
+        w0, w0p, winf, winfp, winf_eff = self._cache["wterms"]
+        if len(self._params) > 0:
+            self._mix = self._params[0]
+        else:
+            self._mix = 1.0
+        self._cache["rem"] = ((w0p / winf_eff) * winfp**2 - winf_eff**2) / (w0p + 1e-10)**2
+
+    def __call__(self, alpha):
+        x, y, z = self._cache["terms"]
+        d = 1 + alpha**0.5 * y + alpha * z
+        r = self._cache["rem"]
+        func = lambda x: self._mix * (2 / (1 + np.exp(x / self._mix)) - 1)
+        res = _apply_func(func, r * d * (2 / (alpha + 1e-10)**2))
+        return (alpha * x / d) * (1 + res)
+
+
 class MOD_ISI_ACW_MAT(SPL_ACW):
     def compute_cache(self, w_list):
         # note w0 is exx, w0p is 2*EMP2

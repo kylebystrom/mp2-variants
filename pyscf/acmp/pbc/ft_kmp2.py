@@ -96,7 +96,7 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
         mo_coeff = mp.mo_coeff
 
     nkpts = mp.nkpts
-    small_gap = 1e-10
+    small_gap = 1e-8
     occs_k = []
     if eris is None:
         nocc_list = []
@@ -484,7 +484,14 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
     # Apply Madelung correction!
     madelung = tools.madelung(mp._scf.cell, mp._scf.kpts)
     vpp = -0.5 * madelung
-    if "gp1" in results:
+    results["_madelung"] = vpp
+    if False:#task == "osmi":
+        tot = 0
+        for k in range(nkpts):
+            tot += 2 * np.sum(occs_k[k]**2)
+        tot /= mp.nkpts
+        results["gp1"] += vpp * tot
+    elif "gp1" in results:
         results["gp1"] += vpp * results["n0"]
     if "e1" in results:
         tot = 0
@@ -720,7 +727,7 @@ class FTMP2Mixin(_PBC4FT_Mixin, ft_mp2.FTMP2Mixin):
 
 class FTACMP2Mixin(_PBC4FT_Mixin, ft_mp2.FTACMP2Mixin):
     def get_acmp_df_wlist(self, mo_coeff):
-        with lib.temporary_env(self._scf, exxdiv='ewald'):
+        with lib.temporary_env(self._scf, exxdiv=None):
             res = super().get_acmp_df_wlist(mo_coeff)
         return res
 
@@ -762,6 +769,14 @@ class FTACMP2Mixin(_PBC4FT_Mixin, ft_mp2.FTACMP2Mixin):
         mo_coeff = [coeff[:, :nocc] for coeff, nocc in zip(mo_coeff, results["nocc_list"])]
 
         wlist_df = mp.get_acmp_df_wlist(mo_coeff)
+        if "_madelung" in results:
+            for k, wl in enumerate(wlist_df):
+                # EXX term should have madelung
+                #print(wl[0].shape)
+                wl[0][:] -= results["_madelung"] * np.eye(results["nocc_list"][k])
+                # wl[0][:] -= results["_madelung"] * np.diag(occs[k])
+        else:
+            raise RuntimeError
         gp2_term = 0
         for k in range(mp.nkpts):
             w_list = ac_kmp2.concatenate_w(w_list_k[k], wlist_df[k])
