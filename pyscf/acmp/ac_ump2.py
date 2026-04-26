@@ -29,7 +29,7 @@ from pyscf import __config__
 from pyscf.mp.ump2 import UMP2
 from pyscf.acmp.ac_mp2 import concatenate_w, \
     ACMP_D_ONLY, ACMP_D_AND_X, _acmp_ao2mo, MP2NumInt, Grids, \
-    add_to_w_list_, get_acmp_df_wlist
+    add_to_w_list_, get_acmp_df_wlist, _eval_singles_
 
 WITH_T2 = getattr(__config__, 'mp_ump2_with_t2', True)
 
@@ -41,9 +41,8 @@ def get_acmp_df_mat(mp, df_code, mo_coeff):
         vmat = 0.3125**2 * 2 * mp._scf.mol.intor("int1e_kin")
         vmat = numpy.stack([vmat, vmat], axis=0)
     else:
-        ni = MP2NumInt()
-        grids = Grids(mp._scf.mol)
-        grids.level = 3
+        ni = mp._numint
+        grids = mp.grids
         maxmem = mp._scf.mol.max_memory
         nelec, excsum, vmat = ni.nr_ump2(mp._scf.mol, grids, df_code,
                                          mp._scf.make_rdm1(), relativity=0,
@@ -62,7 +61,7 @@ def get_acmp_df_mat(mp, df_code, mo_coeff):
     # return _acmp_ao2mo(vmat, occ_coeff)
 
 
-def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
+def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2, with_singles):
     if mo_energy is not None or mo_coeff is not None:
         # For backward compatibility.  In pyscf-1.4 or earlier, mp.frozen is
         # not supported when mo_energy or mo_coeff is given.
@@ -91,6 +90,13 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
 
     wa_list = [numpy.zeros((nocca, nocca)) for _ in range(mp.get_pt_list_size())]
     wb_list = [numpy.zeros((noccb, noccb)) for _ in range(mp.get_pt_list_size())]
+    
+    if with_singles:
+        # NOTE singles only computed for the standard W0'
+        dfock_a, dfock_b = mp._get_singles_vmat()
+        _eval_singles_(wa_list, dfock_a, eia_a)
+        _eval_singles_(wb_list, dfock_b, eia_b)
+
     for i in range(nocca):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
             # When mf._eri is a custom integrals with the shape (n,n,n,n), the
@@ -140,7 +146,8 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
 def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbose=None):
     if eris is None:
         eris = mp.ao2mo(mo_coeff)
-    (wa_list, wb_list), t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2)
+    (wa_list, wb_list), t2 = matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2,
+                                           mp.with_singles)
     if mo_coeff is None:
         mo_coeff = eris.mo_coeff
     wlist_df = mp.get_acmp_df_wlist(mo_coeff)
@@ -156,12 +163,20 @@ def kernel(mp, mo_energy=None, mo_coeff=None, eris=None, with_t2=WITH_T2, verbos
 
 
 class ACUMP2(UMP2):
+    _keys = {
+        "si_limit", "ac_interpolator", "df_codes", "acmp_wlist", "with_singles"
+    }
+
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None):
         super().__init__(mf, frozen, mo_coeff, mo_occ)
         self.si_limit = "HF"
         self.ac_interpolator = None
+        self._numint = MP2NumInt()
+        self.grids = Grids(self._scf.mol)
+        self.grids.level = 3
         self.df_codes = []
         self.acmp_wlist = None
+        self.with_singles = False
 
     get_acmp_df_mat = get_acmp_df_mat
 
@@ -171,6 +186,34 @@ class ACUMP2(UMP2):
 
     def get_pt_list_size(self):
         return 1
+
+    def _get_singles_vmat(self):
+        mf = self._scf
+        if mf.istype("UKS"):
+            mf = mf.to_hf()
+        moidx = self.get_frozen_mask()
+        omo_coeff = mf.mo_coeff
+        occ = mf.mo_occ
+        assert numpy.logical_or(occ == 0, occ == 1).all()
+        is_occ = occ > 0
+        vir = numpy.logical_not(is_occ)
+        dm1 = mf.make_rdm1(
+            mo_coeff=omo_coeff,
+            mo_occ=occ,
+        )
+        fock = mf.get_hcore(self.mol) + mf.get_veff(self.mol, dm1)
+        dfock_a = _acmp_ao2mo(fock[0], omo_coeff[0])
+
+        occ_act = numpy.logical_and(moidx[0], is_occ[0])
+        vir_act = numpy.logical_and(moidx[0], vir[0])
+        dfock_a = dfock_a[occ_act][:, vir_act]
+
+        dfock_b = _acmp_ao2mo(fock[1], omo_coeff[1])
+        occ_act = numpy.logical_and(moidx[1], is_occ[1])
+        vir_act = numpy.logical_and(moidx[1], vir[1])
+        dfock_b = dfock_b[occ_act][:, vir_act]
+
+        return dfock_a, dfock_b
     
     def get_df_list_size(self):
         return 1

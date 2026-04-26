@@ -92,6 +92,12 @@ def concatenate_w(wlist_pt, wlist_df):
     return w_list
 
 
+def _eval_singles_(w_list, dfock, eia):
+    wtmp = numpy.einsum("ia,ja->ij", dfock, dfock.conj() / eia)
+    wtmp = wtmp + wtmp.conj().T
+    w_list[0] += wtmp
+
+
 def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2, with_singles):
     if mo_energy is not None or mo_coeff is not None:
         # For backward compatibility.  In pyscf-1.4 or earlier, mp.frozen is
@@ -122,9 +128,7 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2, with_singles):
     if with_singles:
         # NOTE singles only computed for the standard W0'
         dfock = mp._get_singles_vmat()
-        wtmp = numpy.einsum("ia,ja->ij", dfock, dfock.conj() / eia)
-        wtmp = wtmp + wtmp.conj().T
-        w_list[0] += wtmp
+        _eval_singles_(w_list, dfock, eia)
 
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
@@ -235,6 +239,10 @@ def add_to_w_list_(mp, w_list, gd, gx, ei, mode, wt=1.0,
 
 
 class ACMP2(MP2):
+    _keys = {
+        "si_limit", "ac_interpolator", "df_codes", "acmp_wlist", "with_singles"
+    }
+
     def __init__(self, mf, frozen=None, mo_coeff=None, mo_occ=None):
         super().__init__(mf, frozen, mo_coeff, mo_occ)
         self.si_limit = "HF"
@@ -242,7 +250,6 @@ class ACMP2(MP2):
         self._numint = MP2NumInt()
         self.grids = Grids(self._scf.mol)
         self.grids.level = 3
-        self.functional_list = []
         self.df_codes = []
         self.acmp_wlist = None
         self.with_singles = False
