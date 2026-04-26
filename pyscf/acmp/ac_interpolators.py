@@ -212,6 +212,11 @@ class ACW:
         raise NotImplementedError
 
 
+class TrivialACW(ACW):
+    def __call__(self, alpha):
+        return (alpha * self._cache["w0"])
+
+
 class BasicACW(ACW):
     def __call__(self, alpha):
         w0 = self._cache["w0"]

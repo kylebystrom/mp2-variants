@@ -122,11 +122,9 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2, with_singles):
     if with_singles:
         # NOTE singles only computed for the standard W0'
         dfock = mp._get_singles_vmat()
-        print(dfock.shape, mp._scf.mol.nao_nr())
         wtmp = numpy.einsum("ia,ja->ij", dfock, dfock.conj() / eia)
         wtmp = wtmp + wtmp.conj().T
         w_list[0] += wtmp
-        print("SINGLES", numpy.trace(w_list[0]))
 
     for i in range(nocc):
         if isinstance(eris.ovov, numpy.ndarray) and eris.ovov.ndim == 4:
@@ -139,7 +137,6 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2, with_singles):
         gi = gi.reshape(nvir,nocc,nvir).transpose(1,0,2)
         ei = lib.direct_sum('jb+a->jba', eia, eia[i])
         mp.add_to_w_list_(w_list, gi, gi, ei, ACMP_PAIRED)
-    print("DOUBLES", numpy.trace(w_list[0]))
 
     return w_list, t2
 

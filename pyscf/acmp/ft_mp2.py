@@ -160,7 +160,7 @@ def construct_ei_helper(beta, smooth_edep, small_gap, get_tderiv):
     return _get_ei_helper
 
 
-def calculate_ft_singles_(results, v1, occterms, eterms, dterms, dvterms):
+def calculate_ft_singles_(results, v1, occterms, eterms, dterms, dvterms, wt=1.0):
     nocc, nvir, dn_ia, dn0_ia = occterms
     inve, dinve = eterms
     emul_ia, nterm_ia, dnterm_ia = dterms
@@ -174,22 +174,22 @@ def calculate_ft_singles_(results, v1, occterms, eterms, dterms, dvterms):
         w_list[0][:] = -lib.einsum("ia,ja->ij", tmp, tmp.conj())
         w_list[0][:] = w_list[0] + w_list[0].T.conj()
     elif "gp2" in results:
-        results["gp2"] += (2 * inve * v1ia2 * dn_ia).sum()
+        results["gp2"] += wt * (2 * inve * v1ia2 * dn_ia).sum()
     if "e2" in results:
         e2 = (2 * inve * v1ia2 * dn_ia * (1 + emul_ia)).sum()
         e2 += (2 * dinve * v1ia2 * dn_ia).sum()
         e2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdeu)).sum()
-        results["e2"] += e2
+        results["e2"] += wt * e2
     if "n2" in results:
         n2 = (-2 * inve * v1ia2 * dn_ia * nterm_ia).sum()
         n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * dvdu)).sum()
-        results["n2"] += n2
+        results["n2"] += wt * n2
     if "dn2" in results:
         n2 = (-2 * inve * v1ia2 * dn_ia * (nterm_ia * nterm_ia + dnterm_ia)).sum()
         n2 += (-8 * inve * dn_ia * nterm_ia * numpy.real(v1ia.conj() * dvdu)).sum()
         n2 += (-4 * inve * dn_ia * numpy.real(v1ia.conj() * d2vdu2)).sum()
         n2 += (-4 * inve * dn_ia * numpy.real(dvdu.conj() * dvdu)).sum()
-        results["dn2"] += n2
+        results["dn2"] += wt * n2
 
 
 def calculate_n1_dn0_for_ks(beta, nocc, occs, v1):
@@ -199,40 +199,40 @@ def calculate_n1_dn0_for_ks(beta, nocc, occs, v1):
     return n1, dn0
 
 
-def calculate_ft_mu_contribs_(results, beta, gp1, occs, mo_energy, nocc, n0, v1, muterms, dvdu_ii):
+def calculate_ft_mu_contribs_(results, beta, gp1, occs, mo_energy, nocc, n0, v1, muterms, dvdu_ii, wt=1.0):
     mu, mu1, mu2 = muterms
     v1ii = numpy.diag(v1)[:nocc]
     dndu = beta * occs[:nocc] * (1 - occs[:nocc])
     if "gp1" in results:
-        results["gp1"] += gp1
+        results["gp1"] += wt * gp1
         if mu1 is not None:
-            results["gp1"] -= mu1 * n0
+            results["gp1"] -= wt * mu1 * n0
     if "e1" in results:
-        results["e1"] += gp1 - (2 * mo_energy[:nocc] * v1ii.real * dndu).sum()
+        results["e1"] += wt * (gp1 - (2 * mo_energy[:nocc] * v1ii.real * dndu).sum())
         if mu1 is not None:
-            results["e1"] += mu1 * (2 * mo_energy[:nocc] * dndu).sum()
+            results["e1"] += wt * mu1 * (2 * mo_energy[:nocc] * dndu).sum()
     if "n1" in results:
-        results["n1"] += (-2 * v1ii.real * dndu).sum()
+        results["n1"] += wt * (-2 * v1ii.real * dndu).sum()
     if "dn1" in results:
-        results["dn1"] = (-2 * dvdu_ii.real * dndu).sum()
-        results["dn1"] -= (2 * v1ii.real * dndu * beta * (1 - 2 * occs[:nocc])).sum()
+        results["dn1"] += wt * (-2 * dvdu_ii.real * dndu).sum()
+        results["dn1"] -= wt * (2 * v1ii.real * dndu * beta * (1 - 2 * occs[:nocc])).sum()
     if mu2 is not None:
         if "gp2" in results:
             # factor of 2 for nelec, factor of 1 for second deriv taylor
-            results["gp2"] -= mu1**2 * dndu.sum()
-            results["gp2"] -= mu2 * n0
+            results["gp2"] -= wt * mu1**2 * dndu.sum()
+            results["gp2"] -= wt * mu2 * n0
             # the term in parentheses is -1 * n1 but we might not be computing
             # it earlier, depending on the task
-            results["gp2"] += mu1 * (2 * v1ii.real * dndu).sum()
+            results["gp2"] += wt * mu1 * (2 * v1ii.real * dndu).sum()
         if "e2" in results:
-            results["e2"] += 2 * mu1 * (2 * v1ii.real * dndu).sum()
-            results["e2"] -= 2 * mu1**2 * dndu.sum()
+            results["e2"] += wt * 2 * mu1 * (2 * v1ii.real * dndu).sum()
+            results["e2"] -= wt * 2 * mu1**2 * dndu.sum()
             dndudb = dndu * mo_energy[:nocc] * (1 - 2 * occs[:nocc])
-            results["e2"] -= 2 * beta * mu1 * (v1ii.real * dndudb).sum()
-            results["e2"] -= 2 * (mu1 * dndu * mo_energy[:nocc] * dvdu_ii.real).sum()
+            results["e2"] -= wt * 2 * beta * mu1 * (v1ii.real * dndudb).sum()
+            results["e2"] -= wt * 2 * (mu1 * dndu * mo_energy[:nocc] * dvdu_ii.real).sum()
             # factor or 2 and factor 1/2 cancel again here
-            results["e2"] += beta * mu1**2 * dndudb.sum()
-            results["e2"] += 2 * mu2 * (mo_energy[:nocc] * dndu).sum()
+            results["e2"] += wt * beta * mu1**2 * dndudb.sum()
+            results["e2"] += wt * 2 * mu2 * (mo_energy[:nocc] * dndu).sum()
 
 
 def get_ft_occ_terms(task, beta, occs, mo_energy, nocc, nvir):
@@ -703,6 +703,7 @@ class FTMP2Mixin:
         self._nocc = None
         self.mu_opt = None
         self.max_mu_steps = max_mu_steps
+        self.beta_delta = self.beta * 0.00001
 
     @property
     def nocc(self):
@@ -774,6 +775,7 @@ class FTMP2Mixin:
     @property
     def results(self):
         res = {
+            "e_hf": self.e_hf,
             "e_corr": self.e_corr,
             "e_tot": self.e_tot,
             "e_free": self.e_free,
@@ -963,7 +965,7 @@ class FTMP2Mixin:
             # We compute this derivative with mu fixed, so if
             # particle_fix="pt", we still get the right derivative
             # for computing the entropy term.
-            beta_delta = self.beta * 0.00001
+            beta_delta = self.beta_delta
             res = _call_kernel(mu, self.beta + 0.5 * beta_delta, "gp")
             ep1_beta = res["gp1"]
             ep2_beta = res["gp2"]
@@ -1025,10 +1027,6 @@ class FTMP2Mixin:
             else:
                 raise NotImplementedError("Non-canonical")
         else:
-            if mo_coeff is not None:
-                print(len(mo_coeff), len(mp.mo_occ))
-            else:
-                print("NO MO")
             dm = mp._scf.make_rdm1(mo_coeff, mp.mo_occ)
             mf = mp._scf.to_hf()
             vhf = mf.get_veff(mf.mol, dm)

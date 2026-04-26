@@ -2,6 +2,7 @@ from pyscf.acmp import ft_mp2
 from pyscf.acmp.pbc import ac_kmp2
 from pyscf import lib
 from pyscf.lib import logger
+from pyscf.pbc.lib.kpts import KPoints
 from pyscf.pbc.df import df
 from pyscf.scf.addons import _smearing_optimize, _fermi_smearing_occ
 import numpy as np
@@ -67,6 +68,123 @@ def get_ft_occ_terms(task, beta, nocc, nvir, occi, moei, occa, moea):
     return dn_ia, emul_ia, nterm_ia, dnterm_ia
 
 
+def add_to_w_list_fast_(
+    mp,
+    results,
+    ki,
+    kj,
+    Lov,
+    oovv_ij,
+    ovov_ij,
+    nocc_list,
+    nvir_list,
+    mo_e_o,
+    mo_e_v,
+    occs_k,
+    beta,
+):
+    kconserv = mp.khelper.kconserv
+    nkpts = mp.nkpts
+    kbs = np.zeros(nkpts, dtype=np.int32)
+    Lovi = []
+    Lovj = []
+    oovv = []
+    t2_list = []
+    eia_list = []
+    ejb_list = []
+    oia_list = []
+    ojb_list = []
+    naux = 0
+    for ka in range(nkpts):
+        kb = kconserv[ki, ka, kj]
+        kbs[ka] = kb
+        if naux == 0:
+            naux = Lov[ki, ka].shape[-1]
+            dtype = Lov[ki, ka].dtype
+        else:
+            assert Lov[ki, ka].dtype == dtype
+        assert Lov[ki, ka].shape == (nocc_list[ki], nvir_list[ka], naux), Lov[ki, ka].shape + (nocc_list[ki], nvir_list[ka], naux)
+        assert Lov[kj, kb].shape == (nocc_list[kj], nvir_list[kb], naux), Lov[kj, kb].shape + (nocc_list[kj], nvir_list[kb], naux)
+        assert Lov[kj, kb].dtype == dtype
+        Lovi.append(Lov[ki, ka])
+        Lovj.append(Lov[kj, kb])
+        oovv_ij[ka] = np.zeros(
+            (nocc_list[ki], nvir_list[ka], nocc_list[kj], nvir_list[kb]),
+            dtype=dtype, order="C"
+        )
+        assert Lov[ki, ka].flags.c_contiguous
+        assert Lov[kj, kb].flags.c_contiguous
+        assert oovv_ij[ka].flags.c_contiguous
+        oovv.append(oovv_ij[ka])
+        t2_list.append(np.empty(
+            (nocc_list[ki], nvir_list[ka],
+                nocc_list[kj], nvir_list[kb]),
+                dtype=dtype, order="C"
+        ))
+        eia_list.append(np.ascontiguousarray(mo_e_o[ki][:, None] - mo_e_v[ka]))
+        ejb_list.append(np.ascontiguousarray(mo_e_o[kj][:, None] - mo_e_v[kb]))
+        oia_list.append(np.ascontiguousarray(
+            np.ones_like(occs_k[ki][:nocc_list[ki], None])
+            * (1 - occs_k[ka][-nvir_list[ka]:])
+        ))
+        ojb_list.append(np.ascontiguousarray(
+            occs_k[kj][:nocc_list[kj], None]
+            * (1 - occs_k[kb][-nvir_list[kb]:])
+        ))
+        assert eia_list[-1].flags.c_contiguous
+        assert ejb_list[-1].flags.c_contiguous
+        assert oia_list[-1].flags.c_contiguous
+        assert ojb_list[-1].flags.c_contiguous
+    if dtype == np.float64:
+        raise ValueError
+        fn = lacmp.contract_df_eris
+    else:
+        assert dtype == np.complex128
+        fn  = lacmp.zcontract_df_eris
+    _nvir_list = np.asarray(nvir_list, dtype=np.int32)
+    fn(
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in oovv]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in Lovi]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in Lovj]),
+        kbs.ctypes,
+        _nvir_list.ctypes,
+        ctypes.c_int(nkpts),
+        ctypes.c_int(nocc_list[ki]),
+        ctypes.c_int(nocc_list[kj]),
+        ctypes.c_int(naux),
+        ctypes.c_double(1.0 / nkpts),
+    )
+    lacmp.zsetup_t2(
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in oovv]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in t2_list]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in eia_list]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in ejb_list]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in oia_list]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in ojb_list]),
+        kbs.ctypes,
+        _nvir_list.ctypes,
+        ctypes.c_int(nkpts),
+        ctypes.c_int(nocc_list[ki]),
+        ctypes.c_int(nocc_list[kj]),
+        ctypes.c_double(beta),
+    )
+    for ka in range(nkpts):
+        ovov_ij[ka] = oovv_ij[ka]
+        oovv_ij[ka] = oovv_ij[ka].transpose(0, 2, 1, 3)
+    lacmp.zw_osmi(
+        results["w_list"][0].ctypes,
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in ovov_ij]),
+        (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in t2_list]),
+        kbs.ctypes,
+        _nvir_list.ctypes,
+        ctypes.c_int(nkpts),
+        ctypes.c_int(nocc_list[ki]),
+        ctypes.c_int(nocc_list[kj]),
+        ctypes.c_size_t(nocc_list[kj] * np.max(nvir_list)**2),
+    )
+    return t2_list, kbs, _nvir_list
+
+
 def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
               task="gp", with_singles=True, beta=None,
               smooth_edep=True, dv=None):
@@ -122,6 +240,27 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
     oovv_ij = np.empty((nkpts), dtype=object)
     mo_e_o = [mo_energy[k][:nocc_list[k]] for k in range(nkpts)]
     mo_e_v = [mo_energy[k][-nvir_list[k]:] for k in range(nkpts)]
+    if hasattr(mp.kpts, "nkpts"):
+        ibz2bz = lambda x: [x[k] for k in mp.kpts.ibz2bz]
+        moe_ibz_o = ibz2bz(mo_e_o)
+        moe_ibz_v = ibz2bz(mo_e_v)
+        mo_coeff_ibz = ibz2bz(mo_coeff)
+        mo_energy_ibz = ibz2bz(mo_energy)
+        occs_k_ibz = ibz2bz(occs_k)
+        nocc_ibz = ibz2bz(nocc_list)
+        nvir_ibz = ibz2bz(nvir_list)
+        weights_k = mp.kpts.weights_ibz
+        nkpts_ibz = mp.kpts.nkpts_ibz
+    else:
+        moe_ibz_o = mo_e_o
+        moe_ibz_v = mo_e_v
+        mo_coeff_ibz = mo_coeff
+        mo_energy_ibz = mo_energy
+        occs_k_ibz = occs_k
+        nocc_ibz = nocc_list
+        nvir_ibz = nvir_list
+        weights_k = np.ones(nkpts) / nkpts
+        nkpts_ibz = mp.nkpts
 
     # Build 3-index DF tensor Lov
     FAST_DF = with_df_ints and task == "osmi"
@@ -141,18 +280,20 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
     _get_ei_helper = ft_mp2.construct_ei_helper(
         beta, smooth_edep, small_gap, ("e2" in results)
     )
-    results["occs"] = occs_k
-    results["nocc_list"] = nocc_list
+    results["occs"] = occs_k_ibz
+    results["nocc_list"] = nocc_ibz
+    results["weights_k"] = weights_k
     if task == "osmi":
         results["w_list"] = []
-        for k in range(nkpts):
+        for k in range(nkpts_ibz):
             results["w_list"].append([
-                np.zeros((nocc_list[k], nocc_list[k]), dtype=np.complex128)
+                np.zeros((nocc_ibz[k], nocc_ibz[k]), dtype=np.complex128)
                 for _ in range(mp.get_pt_list_size())
             ])
         full_w_list = results["w_list"]
 
-    e0, gp1, v1 = mp._get_v1(mo_energy, mo_coeff, occs_k)
+    e0, gp1, v1 = mp._get_v1(mo_energy_ibz, mo_coeff_ibz, occs_k_ibz)
+    e0 *= nkpts  # TODO this just gets divided by nkpts again later
     results["e0"] = e0
     results["f0"] = e0  # entropy term added below
     results["mu0"] = mu
@@ -168,196 +309,122 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
     if "dn0" in results:
         results["dn0"] = np.sum(dn0_k)
 
+    if hasattr(mp.kpts, "nkpts"):
+        n0_k_ibz = ibz2bz(n0_k)
+    else:
+        n0_k_ibz = n0_k
+
     if mp.particle_fix == "ks" and dv is None:
         n1 = dn0 = 0
-        for k in range(nkpts):
+        for k in range(nkpts_ibz):
             _n1, _dn0 = ft_mp2.calculate_n1_dn0_for_ks(
-                beta, nocc_list[k], occs_k[k], v1[k]
+                beta, nocc_ibz[k], occs_k_ibz[k], v1[k]
             )
-            n1 += _n1
-            dn0 += _dn0
+            n1 += nkpts * weights_k[k] * _n1
+            dn0 += nkpts * weights_k[k] * _dn0
         # mu1 is -1 * dv
         dv = (n1 / (dn0 + 1e-16) / nkpts).real
     if dv is not None:
-        for k in range(nkpts):
+        for k in range(nkpts_ibz):
             v1[k][:] += dv * np.identity(v1[k].shape[-1])
 
     if task in ["opt", "all", "mu"]:
         dvdu_k, d2vdu2_k, dvdeu_k = mp._get_dv1(
-            mo_energy, mo_coeff, occs_k, beta=beta
+            mo_energy_ibz, mo_coeff_ibz, occs_k_ibz, beta=beta
         )
         vterms_k = [[
             np.diag(dvdu_k[k])[:nocc_list[k]],
             dvdu_k[k][:nocc_list[k], -nvir_list[k]:],
             d2vdu2_k[k][:nocc_list[k], -nvir_list[k]:],
             dvdeu_k[k][:nocc_list[k], -nvir_list[k]:],
-        ] for k in range(nkpts)]
+        ] for k in range(nkpts_ibz)]
     else:
-        vterms_k = [[None] * 4] * nkpts
+        vterms_k = [[None] * 4] * nkpts_ibz
 
     t1 = time.monotonic()
 
     muterms = [mu, mu1, mu2]
-    for k in range(nkpts):
+    for k in range(nkpts_ibz):
         if task == "osmi":
             results["w_list"] = full_w_list[k]
         ft_mp2.calculate_ft_mu_contribs_(
             results, beta, gp1, occs_k[k],
-            mo_energy[k], nocc_list[k], n0_k[k],
-            v1[k], muterms, vterms_k[k][0]
+            mo_energy_ibz[k], nocc_ibz[k], n0_k_ibz[k],
+            v1[k], muterms, vterms_k[k][0],
+            wt=nkpts * weights_k[k]
         )
-        eia = mo_energy[k][:nocc_list[k], None]
-        eia = eia - mo_energy[k][None, -nvir_list[k]:]
-        eterms = _get_ei_helper(eia)
-        dn_ia, dn0_ia, dterms = ft_mp2.get_ft_occ_terms(
-            task, beta, occs_k[k], mo_energy[k], nocc_list[k], nvir_list[k]
-        )
-        occterms = [nocc_list[k], nvir_list[k], dn_ia, dn0_ia]
         if with_singles:
+            eia = mo_energy_ibz[k][:nocc_ibz[k], None]
+            eia = eia - mo_energy_ibz[k][None, -nvir_ibz[k]:]
+            eterms = _get_ei_helper(eia)
+            dn_ia, dn0_ia, dterms = ft_mp2.get_ft_occ_terms(
+                task, beta, occs_k_ibz[k], mo_energy_ibz[k],
+                nocc_ibz[k], nvir_ibz[k]
+            )
+            occterms = [nocc_ibz[k], nvir_ibz[k], dn_ia, dn0_ia]
             ft_mp2.calculate_ft_singles_(
-                results, v1[k], occterms, eterms, dterms, vterms_k[k][1:]
+                results, v1[k], occterms, eterms, dterms, vterms_k[k][1:],
+                wt=nkpts * weights_k[k]
             )
 
     e2_ss = e2_os = gp2_ss = gp2_os = 0
     scaled_kpts = mp._scf.cell.get_scaled_kpts(mp._scf.kpts)
 
     t2 = time.monotonic()
+    if hasattr(mp.kpts, "nkpts") and task == "osmi":
+        ki_list = mp.kpts.ibz2bz
+    else:
+        ki_list = np.arange(nkpts)
 
-    for ki in range(nkpts):
+    for idx, ki in enumerate(ki_list):
         print("LOOP ki", ki, task)
         ta = time.monotonic()
         tc = [0, 0, 0, 0, 0]
         if task == "osmi":
-            results["w_list"] = full_w_list[ki]
+            results["w_list"] = full_w_list[idx]
         for kj in range(nkpts):
             ti0 = time.monotonic()
-            if with_df_ints and FAST_DF:
-                kbs = np.zeros(nkpts, dtype=np.int32)
-                Lovi = []
-                Lovj = []
-                oovv = []
-                t2_list = []
-                eia_list = []
-                ejb_list = []
-                oia_list = []
-                ojb_list = []
-                naux = 0
-                for ka in range(nkpts):
-                    kb = kconserv[ki, ka, kj]
-                    kbs[ka] = kb
-                    if naux == 0:
-                        naux = Lov[ki, ka].shape[-1]
-                        dtype = Lov[ki, ka].dtype
-                    else:
-                        assert Lov[ki, ka].dtype == dtype
-                    assert Lov[ki, ka].shape == (nocc_list[ki], nvir_list[ka], naux), Lov[ki, ka].shape + (nocc_list[ki], nvir_list[ka], naux)
-                    assert Lov[kj, kb].shape == (nocc_list[kj], nvir_list[kb], naux), Lov[kj, kb].shape + (nocc_list[kj], nvir_list[kb], naux)
-                    assert Lov[kj, kb].dtype == dtype
-                    Lovi.append(Lov[ki, ka])
-                    Lovj.append(Lov[kj, kb])
-                    oovv_ij[ka] = np.zeros(
-                        (nocc_list[ki], nvir_list[ka],
-                         nocc_list[kj], nvir_list[kb]),
-                         dtype=dtype, order="C"
-                    )
-                    assert Lov[ki, ka].flags.c_contiguous
-                    assert Lov[kj, kb].flags.c_contiguous
-                    assert oovv_ij[ka].flags.c_contiguous
-                    oovv.append(oovv_ij[ka])
-                    t2_list.append(np.empty(
-                        (nocc_list[ki], nvir_list[ka],
-                         nocc_list[kj], nvir_list[kb]),
-                         dtype=dtype, order="C"
-                    ))
-                    eia_list.append(np.ascontiguousarray(mo_e_o[ki][:, None] - mo_e_v[ka]))
-                    ejb_list.append(np.ascontiguousarray(mo_e_o[kj][:, None] - mo_e_v[kb]))
-                    oia_list.append(np.ascontiguousarray(
-                        np.ones_like(occs_k[ki][:nocc_list[ki], None])
-                        * (1 - occs_k[ka][-nvir_list[ka]:])
-                    ))
-                    ojb_list.append(np.ascontiguousarray(
-                        occs_k[kj][:nocc_list[kj], None]
-                        * (1 - occs_k[kb][-nvir_list[kb]:])
-                    ))
-                    assert eia_list[-1].flags.c_contiguous
-                    assert ejb_list[-1].flags.c_contiguous
-                    assert oia_list[-1].flags.c_contiguous
-                    assert ojb_list[-1].flags.c_contiguous
-                if dtype == np.float64:
-                    raise ValueError
-                    fn = lacmp.contract_df_eris
+            if FAST_DF:
+                assert with_df_ints and task == "osmi"
+                add_to_w_list_fast_(
+                    mp,
+                    results,
+                    ki,
+                    kj,
+                    Lov,
+                    oovv_ij,
+                    ovov_ij,
+                    nocc_list,
+                    nvir_list,
+                    mo_e_o,
+                    mo_e_v,
+                    occs_k,
+                    beta,
+                )
+                continue
+            for ka in range(nkpts):
+                kb = kconserv[ki,ka,kj]
+                # (ia|jb)
+                if with_df_ints:
+                    oovv_ij[ka] = (1./nkpts) * lib.einsum(
+                        "Lia,Ljb->iajb",
+                        Lov[ki, ka],
+                        Lov[kj, kb],
+                    ).transpose(0,2,1,3)
                 else:
-                    assert dtype == np.complex128
-                    fn  = lacmp.zcontract_df_eris
-                _nvir_list = np.asarray(nvir_list, dtype=np.int32)
-                fn(
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in oovv]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in Lovi]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in Lovj]),
-                    kbs.ctypes,
-                    _nvir_list.ctypes,
-                    ctypes.c_int(nkpts),
-                    ctypes.c_int(nocc_list[ki]),
-                    ctypes.c_int(nocc_list[kj]),
-                    ctypes.c_int(naux),
-                    ctypes.c_double(1.0 / nkpts),
-                )
-                lacmp.zsetup_t2(
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in oovv]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in t2_list]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in eia_list]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in ejb_list]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in oia_list]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in ojb_list]),
-                    kbs.ctypes,
-                    _nvir_list.ctypes,
-                    ctypes.c_int(nkpts),
-                    ctypes.c_int(nocc_list[ki]),
-                    ctypes.c_int(nocc_list[kj]),
-                    ctypes.c_double(beta),
-                )
-                for ka in range(nkpts):
-                    ovov_ij[ka] = oovv_ij[ka]
-                    oovv_ij[ka] = oovv_ij[ka].transpose(0, 2, 1, 3)
-            else:
-                for ka in range(nkpts):
-                    kb = kconserv[ki,ka,kj]
-                    # (ia|jb)
-                    if with_df_ints:
-                        oovv_ij[ka] = (1./nkpts) * lib.einsum(
-                            "Lia,Ljb->iajb",
-                            Lov[ki, ka],
-                            Lov[kj, kb],
-                        ).transpose(0,2,1,3)
-                    else:
-                        raise NotImplementedError
-                        orbo_i = mo_coeff[ki][:,:nocc]
-                        orbo_j = mo_coeff[kj][:,:nocc]
-                        orbv_a = mo_coeff[ka][:,nocc:]
-                        orbv_b = mo_coeff[kb][:,nocc:]
-                        oovv_ij[ka] = fao2mo(
-                            (orbo_i, orbv_a, orbo_j, orbv_b),
-                            (mp.kpts[ki], mp.kpts[ka], mp.kpts[kj], mp.kpts[kb]),
-                            compact=False
-                        ).reshape(nocc,nvir,nocc,nvir).transpose(0,2,1,3) / nkpts
+                    raise NotImplementedError
+                    orbo_i = mo_coeff[ki][:,:nocc]
+                    orbo_j = mo_coeff[kj][:,:nocc]
+                    orbv_a = mo_coeff[ka][:,nocc:]
+                    orbv_b = mo_coeff[kb][:,nocc:]
+                    oovv_ij[ka] = fao2mo(
+                        (orbo_i, orbv_a, orbo_j, orbv_b),
+                        (mp.kpts[ki], mp.kpts[ka], mp.kpts[kj], mp.kpts[kb]),
+                        compact=False
+                    ).reshape(nocc,nvir,nocc,nvir).transpose(0,2,1,3) / nkpts
             ti1 = time.monotonic()
             tc[0] += ti1 - ti0
-            if FAST_DF:
-                assert task == "osmi"
-                lacmp.zw_osmi(
-                    results["w_list"][0].ctypes,
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in ovov_ij]),
-                    (ctypes.c_void_p * nkpts)(*[a.ctypes.data_as(ctypes.c_void_p) for a in t2_list]),
-                    kbs.ctypes,
-                    _nvir_list.ctypes,
-                    ctypes.c_int(nkpts),
-                    ctypes.c_int(nocc_list[ki]),
-                    ctypes.c_int(nocc_list[kj]),
-                    ctypes.c_size_t(nocc_list[kj] * np.max(nvir_list)**2),
-                )
             for ka in range(nkpts):
-                if FAST_DF:
-                    continue
                 ti0 = time.monotonic()
                 kb = kconserv[ki, ka, kj]
                 kpts = mp._scf.kpts
@@ -390,64 +457,33 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
 
                 ti1 = time.monotonic()
                 tc[3] += ti1 - ti0
-                if FAST_DF:
-                    pass
-                elif FAST_DF:
-                    occ_iajb = lib.einsum('ia,jb->iajb', dn_ia, dn_jb)
-                    dterms = [
-                        (emul_ia, emul_jb),
-                        (nterm_ia, nterm_jb),
-                        (dnterm_ia, dnterm_jb),
-                    ]
+                occ_ijab = lib.einsum('ia,jb->ijab', dn_ia, dn_jb)
+                dterms = [
+                    (emul_ia, emul_jb),
+                    (nterm_ia, nterm_jb),
+                    (dnterm_ia, dnterm_jb),
+                ]
 
-                    eiajb = lib.direct_sum('ia,jb->iajb', eia, ejb)
-                    ti0 = time.monotonic()
-                    tc[4] += ti0 - ti1
-                    eiajb, deiajb = _get_ei_helper(eiajb)
-                    eiajb *= occ_iajb
-                    if deiajb is not None:
-                        deiajb[:] *= occ_iajb
-                else:
-                    occ_ijab = lib.einsum('ia,jb->ijab', dn_ia, dn_jb)
-                    dterms = [
-                        (emul_ia, emul_jb),
-                        (nterm_ia, nterm_jb),
-                        (dnterm_ia, dnterm_jb),
-                    ]
-
-                    eijab = lib.direct_sum('ia,jb->ijab', eia, ejb)
-                    ti0 = time.monotonic()
-                    tc[4] += ti0 - ti1
-                    eijab, deijab = _get_ei_helper(eijab)
-                    eijab *= occ_ijab
-                    if deijab is not None:
-                        deijab[:] *= occ_ijab
+                eijab = lib.direct_sum('ia,jb->ijab', eia, ejb)
+                ti0 = time.monotonic()
+                tc[4] += ti0 - ti1
+                eijab, deijab = _get_ei_helper(eijab)
+                eijab *= occ_ijab
+                if deijab is not None:
+                    deijab[:] *= occ_ijab
 
                 ti1 = time.monotonic()
                 tc[1] += ti1 - ti0
                 if task == "osmi":
-                    if FAST_DF:
-                        # t2i = ovov_ij[ka].conj() * eiajb
-                        t2i = t2_list[ka]
-                        gdx = ovov_ij[ka] - 0.5 * ovov_ij[kb].transpose(0, 3, 2, 1)
-                        nocci = nocc_list[ki]
-                        gdx.shape = (nocci, t2i.size // nocci)
-                        t2i.shape = (nocci, gdx.size // nocci)
-                        results["w_list"][0] += lib.dot(t2i, gdx.T)
-                    else:
-                        # The osmi implementation of add_ft_pt2_terms_ is super slow.
-                        gdx = oovv_ij[ka] - 0.5 * oovv_ij[kb].transpose(0, 1, 3, 2)
-                        # gdx *= eijab
-                        t2i = oovv_ij[ka].conj() * eijab
-                        results["w_list"][0] += lib.einsum("ikab,jkab->ij", t2i, gdx)
+                    # The osmi implementation of add_ft_pt2_terms_ is super slow.
+                    gdx = oovv_ij[ka] - 0.5 * oovv_ij[kb].transpose(0, 1, 3, 2)
+                    t2i = oovv_ij[ka].conj() * eijab
+                    results["w_list"][0] += lib.einsum("ikab,jkab->ij", t2i, gdx)
                 else:
-                    if FAST_DF:
-                        raise NotImplementedError
-                    else:
-                        sterms = ft_mp2.add_ft_pt2_terms_(
-                            mp, results, task, eijab, deijab,
-                            (oovv_ij[ka], oovv_ij[kb]), dterms
-                        )
+                    sterms = ft_mp2.add_ft_pt2_terms_(
+                        mp, results, task, eijab, deijab,
+                        (oovv_ij[ka], oovv_ij[kb]), dterms
+                    )
                     e2_ss += sterms[0]
                     e2_os += sterms[1]
                     gp2_ss += sterms[2]
@@ -455,7 +491,7 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
                 ti0 = time.monotonic()
                 tc[2] += ti0 - ti1
         if task == "osmi":
-            full_w_list[ki] = [0.5 * (w + w.conj().T) for w in results["w_list"]]
+            full_w_list[idx] = [0.5 * (w + w.conj().T) for w in results["w_list"]]
         tb = time.monotonic()
         print("END", ki, tb-ta, tc)
 
@@ -475,14 +511,18 @@ def gc_kernel(mp, mo_energy, mo_coeff, eris=None, mu=None,
         results, task, ddn0, e2_ss, e2_os, gp2_ss, gp2_os
     )
     for k in results:
-        if k not in ["w_list", "occs", "nocc_list"]:
+        if k not in ["w_list", "occs", "nocc_list", "weights_k"]:
             results[k] /= mp.nkpts
             if np.abs(results[k].imag) > 1e-10:
                 logger.warn("Imaginary energy term in FT-MP2! {} {}".format(k, results[k]))
             results[k] = results[k].real
 
     # Apply Madelung correction!
-    madelung = tools.madelung(mp._scf.cell, mp._scf.kpts)
+    if hasattr(mp.kpts, "nkpts"):
+        _kpts = mp.kpts.kpts
+    else:
+        _kpts = mp.kpts
+    madelung = tools.madelung(mp._scf.cell, _kpts)
     vpp = -0.5 * madelung
     results["_madelung"] = vpp
     if False:#task == "osmi":
@@ -551,6 +591,8 @@ def _init_mp_df_eris(mp, nocc_list, nvir_list, nmo_list):
     # TODO account for mp.frozen
     mo_coeff = mp.mo_coeff  # _add_padding(mp, mp.mo_coeff, mp.mo_energy)[0]
     kpts = mp.kpts
+    if hasattr(kpts, "nkpts"):
+        kpts = kpts.kpts
     nkpts = len(kpts)
     if gamma_point(kpts):
         dtype = np.double
@@ -590,6 +632,12 @@ def _init_mp_df_eris(mp, nocc_list, nvir_list, nmo_list):
 
 class _PBC4FT_Mixin:
     def _get_v1(self, mo_energy, mo_coeff, ac_occ):
+        if hasattr(self.kpts, "nkpts"):
+            wts = self.kpts.weights_ibz
+            nkpts = self.kpts.nkpts_ibz
+        else:
+            nkpts = self.nkpts
+            wts = np.ones(nkpts) / nkpts
         ac_occ = [2 * o for o in ac_occ]
         if self.frozen is None:
             mo_occ = [o.copy() for o in ac_occ]
@@ -608,6 +656,7 @@ class _PBC4FT_Mixin:
         with lib.temporary_env(self._scf, exxdiv=None):
             vj, vk = self._scf.get_jk(self.mol, dm)
         vhf = vj - 0.5 * vk
+        assert len(vj) == len(vk) == len(dm) == len(mo_coeff), (len(vj), len(vk), len(dm), len(mo_coeff))
 
         if not hasattr(self._scf, "to_hf"):
             mf = self._scf
@@ -626,15 +675,16 @@ class _PBC4FT_Mixin:
             for coeff, fock in zip(mo_coeff, fockao)
         ]
         e0 = 0
-        for k in range(self.nkpts):
-            e0 += mo_energy[k].dot(ac_occ[k])
+        for k in range(nkpts):
+            e0 += wts[k] * mo_energy[k].dot(ac_occ[k])
             dfock[k] -= np.diag(mo_energy[k])
-        return e0, de0 - e0 / self.nkpts, dfock
+        return e0, de0 - e0, dfock
     
     def _get_dv1(self, mo_energy, mo_coeff, ac_occ, beta):
+        nkpts = len(ac_occ)
         assert beta is not None
-        mo_occ = [o * (1 - o) * beta for o in ac_occ]
-        dm = self._make_rdm1_for_dv(mo_coeff, 2 * mo_occ)
+        mo_occ = [2 * o * (1 - o) * beta for o in ac_occ]
+        dm = self._make_rdm1_for_dv(mo_coeff, mo_occ)
         with lib.temporary_env(self._scf, exxdiv=None):
             vj, vk = self._scf.get_jk(self.mol, dm)
         vhf1 = [
@@ -642,9 +692,9 @@ class _PBC4FT_Mixin:
             for coeff, j, k in zip(mo_coeff, vj, vk)
         ]
 
-        for k in range(self.nkpts):
+        for k in range(nkpts):
             mo_occ[k] *= beta * (1 - 2 * ac_occ[k])
-        dm = self._make_rdm1_for_dv(mo_coeff, 2 * mo_occ)
+        dm = self._make_rdm1_for_dv(mo_coeff, mo_occ)
         with lib.temporary_env(self._scf, exxdiv=None):
             vj, vk = self._scf.get_jk(self.mol, dm)
         vhf2 = [
@@ -652,9 +702,9 @@ class _PBC4FT_Mixin:
             for coeff, j, k in zip(mo_coeff, vj, vk)
         ]
 
-        for k in range(self.nkpts):
-            mo_occ[k] = ac_occ[k] * (1 - ac_occ[k]) * beta * mo_energy[k]
-        dm = self._make_rdm1_for_dv(mo_coeff, 2 * mo_occ)
+        for k in range(nkpts):
+            mo_occ[k] = 2 * ac_occ[k] * (1 - ac_occ[k]) * beta * mo_energy[k]
+        dm = self._make_rdm1_for_dv(mo_coeff, mo_occ)
         with lib.temporary_env(self._scf, exxdiv=None):
             vj, vk = self._scf.get_jk(self.mol, dm)
         vhf3 = [
@@ -668,7 +718,10 @@ class _PBC4FT_Mixin:
     def _init_smearing(self):
         assert self._scf.converged
         nelec = ft_mp2.get_correct_nval(self)
-        mo_es = np.hstack(self._scf.mo_energy)
+        moe = self._scf.mo_energy
+        if isinstance(self.kpts, KPoints):
+            moe = self.kpts.transform_mo_energy(moe)
+        mo_es = np.hstack(moe)
         mu, occs = _smearing_optimize(_fermi_smearing_occ, mo_es,
                                       self.nkpts * nelec // 2, 1.0 / self.beta)
         if isinstance(mu, float):
@@ -720,6 +773,26 @@ class _PBC4FT_Mixin:
         else:
             return np.max(self._nocc_list)
 
+    def get_e_hf(self, mo_coeff=None):
+        has_sym = isinstance(self.kpts, KPoints)
+        if not hasattr(self._scf, "to_hf"):
+            # This is HF object
+            if self._scf.converged:
+                return self._scf.e_tot
+            else:
+                raise NotImplementedError("Non-canonical")
+        else:
+            if has_sym:
+                if mo_coeff is not None:
+                    mo_coeff = [mo_coeff[ki] for ki in self.kpts.ibz2bz]
+                mo_occ = [self.mo_occ[ki] for ki in self.kpts.ibz2bz]
+            else:
+                mo_occ = self.mo_occ
+            dm = self._scf.make_rdm1(mo_coeff, mo_occ)
+            mf = self._scf.to_hf()
+            vhf = mf.get_veff(mf.mol, dm)
+            return mf.energy_tot(dm=dm, vhf=vhf)
+
 
 class FTMP2Mixin(_PBC4FT_Mixin, ft_mp2.FTMP2Mixin):
     pass
@@ -766,23 +839,31 @@ class FTACMP2Mixin(_PBC4FT_Mixin, ft_mp2.FTACMP2Mixin):
         # assert mo_coeff is not None
         if mo_coeff is None:
             mo_coeff = mp.mo_coeff
+        if hasattr(mp.kpts, "nkpts"):
+            has_sym = True
+            mo_coeff = [mo_coeff[k] for k in mp.kpts.ibz2bz]
+        else:
+            has_sym = False
+        nkpts = len(mo_coeff)
         mo_coeff = [coeff[:, :nocc] for coeff, nocc in zip(mo_coeff, results["nocc_list"])]
 
         wlist_df = mp.get_acmp_df_wlist(mo_coeff)
+        assert len(mo_coeff) == len(wlist_df) == len(results["w_list"])
         if "_madelung" in results:
             for k, wl in enumerate(wlist_df):
                 # EXX term should have madelung
-                #print(wl[0].shape)
+                # Note that wl has -1 * EXX so we need to subtract _madelung,
+                # which is actually -0.5 * madelung constant.
                 wl[0][:] -= results["_madelung"] * np.eye(results["nocc_list"][k])
                 # wl[0][:] -= results["_madelung"] * np.diag(occs[k])
         else:
             raise RuntimeError
         gp2_term = 0
-        for k in range(mp.nkpts):
+        for k in range(nkpts):
             w_list = ac_kmp2.concatenate_w(w_list_k[k], wlist_df[k])
             w_list = ft_mp2.damp_ft_wmat_off_diag(w_list, occs[k])
-            gp2_term += 2 * mp.ac_interpolator(w_list, occs=occs[k])
-        results["gp2"] += gp2_term / mp.nkpts
+            gp2_term += results["weights_k"][k] * 2 * mp.ac_interpolator(w_list, occs=occs[k])
+        results["gp2"] += gp2_term
         mp.acmp_wlist = w_list
 
         sub_results = results.copy()

@@ -86,11 +86,6 @@ def matrix_kernel(mp, mo_energy, mo_coeff, eris, with_t2):
 
     if with_t2:
         raise NotImplementedError
-        dtype = eris.ovov.dtype
-        t2aa = numpy.empty((nocca,nocca,nvira,nvira), dtype=dtype)
-        t2ab = numpy.empty((nocca,noccb,nvira,nvirb), dtype=dtype)
-        t2bb = numpy.empty((noccb,noccb,nvirb,nvirb), dtype=dtype)
-        t2 = (t2aa,t2ab,t2bb)
     else:
         t2 = None
 

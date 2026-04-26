@@ -32,8 +32,8 @@ struct = ase.io.read("Li.cif")
 struct = struct * [n, n, n]
 atom = ase_atoms_to_pyscf(struct)
 
-#df_codes = [("GGA", funcs.gga_pch_winfp_v2)]
-#silim = ("GGA", funcs.gga_pch_winf_v2)
+# df_codes = [("GGA", funcs.gga_pch_winfp_v2)]
+# silim = ("GGA", funcs.gga_pch_winf_v2)
 df_codes = [("MGGA", funcs.mgga_epc_winfp)]
 silim = ("MGGA", funcs.mgga_epc_winf)
 # acw = MOD_ISI_ACW()
@@ -81,7 +81,9 @@ print("KMP2 energy (per unit cell) =", mypt.e_tot)
 t1 = time.monotonic()
 print("MP2 time", t1 - t0)
 
-print(mypt.e_hf)
+for k, v in mypt.results.items():
+    if k not in ["w_list", "occs", "nocc_list", "weights_k"]:
+        print(k, v)
 
 #exit()
 #mykmp = KappaRMP2(mf)

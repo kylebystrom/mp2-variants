@@ -172,7 +172,7 @@ class KnownValues(unittest.TestCase):
             # NOTE this fd does not work currently because
             # e_corr for ensemble=None contains terms from
             # both the internal energy and grand potential,
-            # so differentiating the whole thing by finite
+            # so differentiating the whole thing by finite difference
             # wrt beta and mu does not yield the entropy
             # and particle number terms of the internal energy.
             f0 = mymp.f_corr

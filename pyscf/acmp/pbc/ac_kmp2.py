@@ -173,6 +173,8 @@ def kernel(mp, mo_energy, mo_coeff, verbose=logger.NOTE, with_t2=WITH_T2):
 
 def _acmp_ao2mo_kpt(mp, mat_k_xx, mo_coeff):
     nocc_list = mp.get_nocc(per_kpoint=True)
+    if hasattr(mp.kpts, "nkpts"):
+        nocc_list = [nocc_list[k] for k in mp.kpts.ibz2bz]
     # nkpts = mp.nkpts
     nkpts = len(mat_k_xx)
     mat_k_oo = []
